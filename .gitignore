@@ -4,5 +4,4 @@ build/
 *.xcodeproj
 xcuserdata/
 .DS_Store
-promo/*.mp4
 promo/stills/
