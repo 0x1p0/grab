@@ -176,9 +176,66 @@ struct SparkleShape: Shape {
 
 // MARK: - Logo (assembles itself from `build` seconds)
 
+/// Apple-style continuous-corner tile, like the app icon's.
+struct Squircle: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let a = r.width / 2, b = r.height / 2, c = CGPoint(x: r.midX, y: r.midY), n: CGFloat = 5
+        for i in 0...360 {
+            let t = CGFloat(i) / 360 * 2 * .pi
+            let ct = cos(t), st = sin(t)
+            let x = c.x + a * (ct >= 0 ? 1 : -1) * pow(abs(ct), 2 / n)
+            let y = c.y + b * (st >= 0 ? 1 : -1) * pow(abs(st), 2 / n)
+            if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// One of the icon's four viewfinder corners, drawn where it sits in the full square, so a
+/// gradient across the whole square colors each corner like the icon.
+struct IconCorner: Shape {
+    var index: Int
+    func path(in r: CGRect) -> Path {
+        let s = r.width
+        let f = CGRect(x: s * 0.1893, y: s * 0.1893, width: s * 0.6213, height: s * 0.6213)
+        let arm = s * 0.174, bend = s * 0.0808
+        let (c, dx, dy): (CGPoint, CGFloat, CGFloat) = [
+            (CGPoint(x: f.minX, y: f.minY), 1, 1), (CGPoint(x: f.maxX, y: f.minY), -1, 1),
+            (CGPoint(x: f.maxX, y: f.maxY), -1, -1), (CGPoint(x: f.minX, y: f.maxY), 1, -1),
+        ][index]
+        var p = Path()
+        p.move(to: CGPoint(x: c.x, y: c.y + dy * arm))
+        p.addLine(to: CGPoint(x: c.x, y: c.y + dy * bend))
+        p.addQuadCurve(to: CGPoint(x: c.x + dx * bend, y: c.y), control: c)
+        p.addLine(to: CGPoint(x: c.x + dx * arm, y: c.y))
+        return p
+    }
+}
+
+/// The icon's pointer, tip at (0.4465, 0.4067) of the tile.
+struct IconPointer: Shape {
+    func path(in r: CGRect) -> Path {
+        let s = r.width, h = s * 0.3542
+        let tip = CGPoint(x: s * 0.4465, y: s * 0.4067)
+        let pts: [(CGFloat, CGFloat)] = [(0, 0), (0, 0.80), (0.205, 0.62), (0.34, 0.93), (0.47, 0.875), (0.335, 0.575), (0.6, 0.565)]
+        var p = Path()
+        for (i, q) in pts.enumerated() {
+            let pt = CGPoint(x: tip.x + q.0 * h, y: tip.y + q.1 * h)
+            if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+        }
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// Grab's icon: an obsidian tile, the viewfinder glowing in its gradient, a glass pointer.
 struct Logo: View {
     var size: CGFloat
     var build: Double
+
+    static let warm = [RGB(0xFFC069).c(), RGB(0xFF6F61).c(), RGB(0xF0457F).c(), RGB(0x9D5BFF).c()]
 
     var body: some View {
         let s = size
@@ -186,45 +243,51 @@ struct Logo: View {
         let corners = (0..<4).map { spring(ramp(build, 0.38 + Double($0) * 0.06, 0.7)) }
         let cur = spring(ramp(build, 0.72, 0.65))
         let spark = spring(ramp(build, 1.1, 0.55))
+        let glow = LinearGradient(colors: Self.warm, startPoint: .topLeading, endPoint: .bottomTrailing)
         ZStack {
-            // Glow behind the tile.
-            RoundedRectangle(cornerRadius: s * 0.24, style: .continuous)
-                .fill(LinearGradient(colors: [RGB(0xFF9F6B).c(), RGB(0xE5577E).c(), RGB(0x7650E0).c()], startPoint: .topLeading, endPoint: .bottomTrailing))
+            // Warm glow behind the tile.
+            Squircle()
+                .fill(LinearGradient(colors: [RGB(0xFF8A3D).c(), RGB(0xEC4F7C).c(), RGB(0x7C5CFF).c()], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .frame(width: s, height: s)
-                .blur(radius: s * 0.22)
-                .opacity(0.55 * sq)
-            RoundedRectangle(cornerRadius: s * 0.235, style: .continuous)
-                .fill(LinearGradient(colors: [RGB(0xFFB27F).c(), RGB(0xEC6A7E).c(), RGB(0xC2508F).c(), RGB(0x6E4FE0).c()],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-                .overlay(
-                    RoundedRectangle(cornerRadius: s * 0.235, style: .continuous)
-                        .fill(LinearGradient(colors: [.white.opacity(0.28), .clear], startPoint: .top, endPoint: .center))
-                )
-                .overlay(RoundedRectangle(cornerRadius: s * 0.235, style: .continuous).strokeBorder(.white.opacity(0.25), lineWidth: s * 0.006))
-                .frame(width: s, height: s)
-                .scaleEffect(0.55 + 0.45 * sq)
-                .opacity(clamp(sq * 1.6))
+                .blur(radius: s * 0.2)
+                .opacity(0.35 * sq)
+            ZStack {
+                Squircle().fill(LinearGradient(colors: [RGB(0x2E2D3A).c(), RGB(0x17161F).c(), RGB(0x0A0A10).c()], startPoint: .top, endPoint: .bottom))
+                Squircle().fill(RadialGradient(colors: [RGB(0xEC4F7C).c(0.32), RGB(0x7C5CFF).c(0.12), .clear], center: UnitPoint(x: 0.5, y: 0.54),
+                                               startRadius: 0, endRadius: s * 0.53))
+                Squircle().fill(LinearGradient(colors: [.white.opacity(0.1), .clear], startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.45)))
+                Squircle().stroke(LinearGradient(colors: [.white.opacity(0.4), .white.opacity(0.04)], startPoint: .top, endPoint: .bottom), lineWidth: max(1, s * 0.008))
+            }
+            .frame(width: s, height: s)
+            .shadow(color: .black.opacity(0.45), radius: s * 0.05, y: s * 0.02)
+            .scaleEffect(0.55 + 0.45 * sq)
+            .opacity(clamp(sq * 1.6))
             ForEach(0..<4, id: \.self) { i in
-                let rot = Double(i) * 90
                 let spread = (1 - corners[i]) * Double(s) * 0.45
-                CornerShape(arm: s * 0.17, radius: s * 0.075)
-                    .stroke(Color.white, style: StrokeStyle(lineWidth: s * 0.072, lineCap: .round, lineJoin: .round))
-                    .frame(width: s * 0.56, height: s * 0.56)
-                    .rotationEffect(.degrees(rot))
-                    .offset(x: CGFloat(i == 1 || i == 2 ? spread : -spread), y: CGFloat(i >= 2 ? spread : -spread))
+                let out = CGSize(width: CGFloat(i == 1 || i == 2 ? spread : -spread), height: CGFloat(i >= 2 ? spread : -spread))
+                IconCorner(index: i)
+                    .stroke(glow, style: StrokeStyle(lineWidth: s * 0.0845, lineCap: .round, lineJoin: .round))
+                    .frame(width: s, height: s)
+                    .shadow(color: RGB(0xF0457F).c(0.6), radius: s * 0.035)
+                    .offset(out)
                     .opacity(clamp(corners[i] * 2))
             }
-            Cursor(scale: s * 0.026)
-                .rotationEffect(.degrees(-14 * (1 - cur)))
-                .offset(x: s * 0.03, y: s * 0.04 - CGFloat(1 - cur) * s * 0.55)
+            IconPointer()
+                .fill(LinearGradient(colors: [.white, RGB(0xECE8F6).c()], startPoint: .top, endPoint: .bottom))
+                .overlay(IconPointer().stroke(RGB(0x0C0B12).c(0.55), style: StrokeStyle(lineWidth: max(0.8, s * 0.0075), lineJoin: .round)))
+                .frame(width: s, height: s)
+                .shadow(color: .black.opacity(0.6), radius: s * 0.03, y: s * 0.018)
+                .rotationEffect(.degrees(-14 * (1 - cur)), anchor: UnitPoint(x: 0.45, y: 0.41))
+                .offset(y: -CGFloat(1 - cur) * s * 0.55)
                 .opacity(clamp(cur * 2.5))
             SparkleShape()
-                .fill(RGB(0xFFF4DA).c())
-                .frame(width: s * 0.13, height: s * 0.13)
+                .fill(RGB(0xFFF6E4).c())
+                .frame(width: s * 0.1, height: s * 0.1)
                 .rotationEffect(.degrees(90 * (1 - spark)))
                 .scaleEffect(spark)
-                .offset(x: s * 0.2, y: -s * 0.2)
-                .shadow(color: .white.opacity(0.8), radius: s * 0.03)
+                .shadow(color: RGB(0xFFF1D6).c(0.95), radius: s * 0.03)
+                .position(x: s * 0.7547, y: s * 0.2452)
+                .frame(width: s, height: s)
         }
         .frame(width: s, height: s)
     }
