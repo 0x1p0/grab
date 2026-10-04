@@ -240,7 +240,7 @@ No other permissions. Grab goes online only to check GitHub for a new version ab
 brew install --cask 0x1p0/tap/grab
 ```
 
-It downloads with your GitHub login, from the GitHub CLI (`gh auth login`) or `HOMEBREW_GITHUB_API_TOKEN`. `brew upgrade` picks up new releases. Already built Grab from source? Add `--adopt` to take over the copy in Applications.
+It downloads with your GitHub login, from the GitHub CLI (`gh auth login`) or `HOMEBREW_GITHUB_API_TOKEN`. `brew upgrade` picks up new releases. Built Grab from source before? Delete that copy from Applications first; your settings stay.
 
 **Download:** `Grab-x.y.z.dmg` from [Releases](https://github.com/0x1p0/grab/releases): open it and drag Grab to Applications.
 
