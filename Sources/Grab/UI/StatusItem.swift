@@ -1,22 +1,27 @@
 import AppKit
 import SwiftUI
 
-/// The menu bar icon and its menu: status, recent grabs, settings.
+/// The menu bar icon and its panel: status, recent grabs, and a few actions.
+///
+/// A custom panel rather than an NSMenu, so it can show real thumbnails, keep to a few
+/// calm rows and draw a quiet selection instead of the system's full-width blue bar.
 @MainActor
-final class StatusItemController: NSObject, NSMenuDelegate {
+final class StatusItemController: NSObject, NSWindowDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    private let menu = NSMenu()
     private unowned let app: AppDelegate
     private var celebrateWork: [DispatchWorkItem] = []
+    private var panel: MenuPanel?
+    private var closedAt = Date.distantPast
+    private var keyMonitor: Any?
 
     init(app: AppDelegate) {
         self.app = app
         super.init()
         item.button?.image = Icons.statusIcon()
         item.button?.toolTip = "Grab — hold \(Trigger.current.symbol) and hover anything"
-        menu.delegate = self
-        menu.autoenablesItems = false
-        item.menu = menu
+        item.button?.target = self
+        item.button?.action = #selector(toggle)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         trackFrontmost()
         refresh()
     }
@@ -31,7 +36,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return ScreenSpace.toAX(w.convertToScreen(b.convert(b.bounds, to: nil)))
     }
 
-    /// Lights the icon up as the flying chip lands.
+    /// Lights the icon up as the grab lands.
     func celebrate(at landing: TimeInterval = 0.58) {
         celebrateWork.forEach { $0.cancel() }
         let on = DispatchWorkItem { [weak self] in self?.item.button?.image = Icons.statusIcon(filled: true) }
@@ -41,223 +46,106 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + landing + 0.67, execute: off)
     }
 
-    // MARK: Menu
+    // MARK: Panel
 
     func openMenu() {
-        item.button?.performClick(nil)
+        if panel == nil { show() }
     }
 
     func closeMenu() {
-        menu.cancelTracking()
+        hide()
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
+    @objc private func toggle() {
+        if panel != nil {
+            hide()
+            return
+        }
+        // The click that closed the panel (by taking focus away) shouldn't reopen it.
+        guard Date().timeIntervalSince(closedAt) > 0.25 else { return }
+        show()
+    }
+
+    private func show() {
         History.shared.ensureLoaded()
-
-        let header = NSMenuItem()
-        let hv = NSHostingView(rootView: MenuHeader())
-        hv.frame = NSRect(x: 0, y: 0, width: 300, height: 58)
-        header.view = hv
-        menu.addItem(header)
-        menu.addItem(.separator())
-
-        let history = History.shared.items
-        if history.isEmpty {
-            let none = NSMenuItem(title: "Nothing grabbed yet", action: nil, keyEquivalent: "")
-            none.isEnabled = false
-            menu.addItem(none)
-        } else {
-            menu.addItem(NSMenuItem.sectionHeader(title: "Recent Grabs"))
-            for (i, h) in history.prefix(8).enumerated() {
-                menu.addItem(historyItem(h, key: i < 9 ? "\(i + 1)" : ""))
-            }
-            // Everything, grouped by the app it came from.
-            let groups = History.shared.byApp(history)
-            if groups.count > 1 || history.count > 8 {
-                let byApp = NSMenuItem(title: "By App", action: nil, keyEquivalent: "")
-                byApp.image = Icons.symbol("square.stack.3d.up")
-                let sub = NSMenu()
-                for g in groups {
-                    let app = NSMenuItem(title: g.app, action: nil, keyEquivalent: "")
-                    let icon = AppIcons.icon(g.bundleID).copy() as! NSImage
-                    icon.size = NSSize(width: 16, height: 16)
-                    app.image = icon
-                    if #available(macOS 14.4, *) { app.subtitle = g.items.count == 1 ? "1 grab" : "\(g.items.count) grabs" }
-                    let items = NSMenu()
-                    for h in g.items.prefix(30) { items.addItem(historyItem(h, key: "", showApp: false)) }
-                    app.submenu = items
-                    sub.addItem(app)
-                }
-                byApp.submenu = sub
-                menu.addItem(byApp)
-            }
-            let search = NSMenuItem(title: "Open History…", action: #selector(showHistory), keyEquivalent: "f")
-            search.target = self
-            search.image = Icons.symbol("magnifyingglass")
-            menu.addItem(search)
-            let clear = NSMenuItem(title: "Clear History", action: #selector(clearHistory), keyEquivalent: "")
-            clear.target = self
-            menu.addItem(clear)
+        guard let button = item.button, let bw = button.window else { return }
+        let anchor = bw.convertToScreen(button.convert(button.bounds, to: nil))
+        let front = lastForeignApp
+        let view = MenuPanelView(
+            frontApp: front.flatMap { a in a.bundleIdentifier.map { (a.localizedName ?? $0, $0) } },
+            actions: MenuPanelView.Actions(
+                copy: { [weak self] h in self?.recopy(h) },
+                close: { [weak self] in self?.hide() },
+                history: { [weak self] in self?.hide(); Panels.shared.showHistory() },
+                shelf: { [weak self] in self?.hide(); Panels.shared.showShelf() },
+                settings: { [weak self] in self?.hide(); self?.app.openSettings() },
+                welcome: { [weak self] in self?.hide(); self?.app.openOnboarding() },
+                updates: { [weak self] in self?.hide(); self?.app.checkForUpdates() },
+                showUpdate: { [weak self] in self?.hide(); Panels.shared.showUpdate() },
+                pause: { Settings.shared.paused.toggle() },
+                toggleApp: { bid in
+                    var list = Settings.shared.excludedApps
+                    if let i = list.firstIndex(of: bid) { list.remove(at: i) } else { list.append(bid) }
+                    Settings.shared.excludedApps = list
+                },
+                prefer: { bid, mode in
+                    var rules = Settings.shared.appRules
+                    rules[bid] = mode?.rawValue
+                    Settings.shared.appRules = rules
+                },
+                quit: { NSApp.terminate(nil) }
+            )
+        )
+        let p = MenuPanel(content: view)
+        p.delegate = self
+        let size = p.contentView?.fittingSize ?? NSSize(width: 340, height: 420)
+        let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        var x = anchor.minX - 8
+        x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
+        let y = anchor.minY - 6 - size.height
+        p.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        p.alphaValue = 0
+        p.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            p.animator().alphaValue = 1
         }
-        if !Shelf.shared.items.isEmpty {
-            let shelf = NSMenuItem(title: "Show Shelf (\(Shelf.shared.items.count))", action: #selector(showShelf), keyEquivalent: "")
-            shelf.target = self
-            shelf.image = Icons.symbol("tray.full")
-            menu.addItem(shelf)
+        panel = p
+        button.highlight(true)
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, let p = self.panel, e.window === p else { return e }
+            return p.handle(e) ? nil : e
         }
-
-        menu.addItem(.separator())
-        let pause = NSMenuItem(title: Settings.shared.paused ? "Resume Grab" : "Pause Grab", action: #selector(AppDelegate.togglePause), keyEquivalent: "p")
-        pause.target = app
-        pause.image = Icons.symbol(Settings.shared.paused ? "play.fill" : "pause.fill")
-        menu.addItem(pause)
-
-        if let front = lastForeignApp, let bid = front.bundleIdentifier, let name = front.localizedName {
-            let off = Settings.shared.excludedApps.contains(bid)
-            let mi = NSMenuItem(title: off ? "Enable in \(name)" : "Disable in \(name)", action: #selector(toggleExcluded(_:)), keyEquivalent: "")
-            mi.target = self
-            mi.representedObject = bid
-            mi.image = front.icon.map { icon in
-                let i = icon.copy() as! NSImage
-                i.size = NSSize(width: 16, height: 16)
-                return i
-            }
-            menu.addItem(mi)
-
-            // "In Figma, prefer Color": a per-app default for the grab type.
-            let rules = NSMenuItem(title: "In \(name), Prefer", action: nil, keyEquivalent: "")
-            rules.image = Icons.symbol("slider.horizontal.3")
-            let sub = NSMenu()
-            let current = Settings.shared.appRules[bid]
-            let auto = NSMenuItem(title: "Automatic", action: #selector(setRule(_:)), keyEquivalent: "")
-            auto.target = self
-            auto.representedObject = [bid, -1] as [Any]
-            auto.state = current == nil ? .on : .off
-            sub.addItem(auto)
-            sub.addItem(.separator())
-            for m in GrabMode.allCases {
-                let r = NSMenuItem(title: m.title, action: #selector(setRule(_:)), keyEquivalent: "")
-                r.target = self
-                r.representedObject = [bid, m.rawValue] as [Any]
-                r.image = Icons.symbol(m.symbol)
-                r.state = current == m.rawValue ? .on : .off
-                sub.addItem(r)
-            }
-            rules.submenu = sub
-            menu.addItem(rules)
-        }
-
-        if !Permissions.shared.accessibility || !Permissions.shared.screenRecording {
-            let setup = NSMenuItem(title: "Finish Setup…", action: #selector(AppDelegate.openOnboarding), keyEquivalent: "")
-            setup.target = app
-            setup.image = Icons.symbol("exclamationmark.triangle.fill")
-            menu.addItem(setup)
-        }
-
-        let welcome = NSMenuItem(title: "Welcome & Playground…", action: #selector(AppDelegate.openOnboarding), keyEquivalent: "")
-        welcome.target = app
-        welcome.image = Icons.symbol("sparkles")
-        menu.addItem(welcome)
-
-        if let update = Updater.shared.available {
-            let u = NSMenuItem(title: "Update to Grab \(update.version)…", action: #selector(showUpdate), keyEquivalent: "")
-            u.target = self
-            u.image = Icons.symbol("arrow.down.circle.fill")
-            menu.addItem(u)
-        }
-
-        let settings = NSMenuItem(title: "Settings…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
-        settings.target = app
-        settings.image = Icons.symbol("gearshape")
-        menu.addItem(settings)
-
-        let updates = NSMenuItem(title: "Check for Updates…", action: #selector(AppDelegate.checkForUpdates), keyEquivalent: "")
-        updates.target = app
-        updates.image = Icons.symbol("arrow.triangle.2.circlepath")
-        menu.addItem(updates)
-
-        menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Grab", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.addItem(quit)
     }
 
-    @objc private func showUpdate() {
-        Panels.shared.showUpdate()
+    private func hide() {
+        guard let p = panel else { return }
+        panel = nil
+        closedAt = Date()
+        item.button?.highlight(false)
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+        p.delegate = nil
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.1
+            p.animator().alphaValue = 0
+        }, completionHandler: {
+            MainActor.assumeIsolated { p.orderOut(nil) }
+        })
     }
 
-    private func historyItem(_ h: History.Item, key: String, showApp: Bool = true) -> NSMenuItem {
-        var title = h.isSecret ? "Secret ••••••" : Formats.oneLine(h.text ?? h.title).truncated(48)
-        if let t = h.text, t.uppercased().hasPrefix("WIFI:") { title = "Wi-Fi “\(Formats.wifi(t).network ?? "network")”" }
-        if case .file(let u) = h.payload { title = u.lastPathComponent }
-        let mi = NSMenuItem(title: title, action: #selector(recopy(_:)), keyEquivalent: key)
-        mi.keyEquivalentModifierMask = []
-        mi.target = self
-        mi.representedObject = h.id
-        mi.image = image(for: h)
-        if #available(macOS 14.4, *) {
-            let when = Date().timeIntervalSince(h.date) < 60 ? "just now" : Self.relative.localizedString(for: h.date, relativeTo: Date())
-            mi.subtitle = ([h.mode.title] + (showApp ? [h.appName].compactMap { $0 } : []) + [when])
-                .joined(separator: " · ")
-        }
-        return mi
+    func windowDidResignKey(_ notification: Notification) {
+        hide()
     }
 
-    private static let relative: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f
-    }()
-
-    private func image(for h: History.Item) -> NSImage? {
-        if let c = h.color { return Icons.swatch(c) }
-        if let t = h.thumbnail {
-            return NSImage(size: NSSize(width: 18, height: 16), flipped: false) { r in
-                let s = t.size
-                let k = min(r.width / max(s.width, 1), r.height / max(s.height, 1))
-                let d = NSRect(x: r.midX - s.width * k / 2, y: r.midY - s.height * k / 2, width: s.width * k, height: s.height * k)
-                NSBezierPath(roundedRect: d, xRadius: 2.5, yRadius: 2.5).addClip()
-                t.draw(in: d)
-                return true
-            }
-        }
-        return Icons.symbol(h.mode.symbol)
-    }
-
-    @objc private func recopy(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? UUID,
-              let h = History.shared.items.first(where: { $0.id == id }) else { return }
+    private func recopy(_ h: History.Item) {
         Clipboard.write(h.payload, secret: h.isSecret)
         Sound.shared.play(.copy)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self] in self?.hide() }
     }
 
-    @objc private func clearHistory() {
-        History.shared.clear()
-    }
-
-    @objc private func showHistory() {
-        Panels.shared.showHistory()
-    }
-
-    @objc private func showShelf() {
-        Panels.shared.showShelf()
-    }
-
-    @objc private func setRule(_ sender: NSMenuItem) {
-        guard let info = sender.representedObject as? [Any], let bid = info.first as? String, let raw = info.last as? Int else { return }
-        var rules = Settings.shared.appRules
-        rules[bid] = raw < 0 ? nil : raw
-        Settings.shared.appRules = rules
-    }
-
-    @objc private func toggleExcluded(_ sender: NSMenuItem) {
-        guard let bid = sender.representedObject as? String else { return }
-        var list = Settings.shared.excludedApps
-        if let i = list.firstIndex(of: bid) { list.remove(at: i) } else { list.append(bid) }
-        Settings.shared.excludedApps = list
-    }
-
-    /// The app the user was in before opening our menu.
+    /// The app the user was in before opening our panel.
     private var lastForeignApp: NSRunningApplication? {
         let me = Bundle.main.bundleIdentifier
         if let f = NSWorkspace.shared.frontmostApplication, f.bundleIdentifier != me { return f }
@@ -278,34 +166,423 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 }
 
-private struct MenuHeader: View {
-    var body: some View {
-        let p = Permissions.shared
-        let s = Settings.shared
-        let (color, text): (Color, String) = {
-            if !p.accessibility { return (.orange, "Needs Accessibility access") }
-            if s.paused { return (.gray, "Paused") }
-            if !p.screenRecording { return (.yellow, "Text & links only (no Screen Recording)") }
-            return (.green, "Ready. Hold \(s.trigger.symbol) and hover")
-        }()
-        HStack(spacing: 10) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 34, height: 34)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Grab").font(.system(size: 13, weight: .semibold))
-                HStack(spacing: 5) {
-                    Circle().fill(color).frame(width: 6, height: 6)
-                    Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+/// A borderless panel that takes keys without activating Grab, like a menu.
+final class MenuPanel: NSPanel {
+    let model = MenuPanelModel()
+
+    init<V: View>(content: V) {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 340, height: 400), styleMask: [.borderless, .nonactivatingPanel],
+                   backing: .buffered, defer: false)
+        isFloatingPanel = true
+        level = .popUpMenu
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        hidesOnDeactivate = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        let host = NSHostingView(rootView: content.environment(model))
+        contentView = host
+    }
+
+    override var canBecomeKey: Bool { true }
+
+    /// Keyboard: ↑ ↓ to move, ⏎ to copy, 1–5 to copy directly, ⌘F history, ⌘, settings, esc closes.
+    func handle(_ e: NSEvent) -> Bool {
+        let cmd = e.modifierFlags.contains(.command)
+        switch (e.keyCode, cmd) {
+        case (53, _): model.send(.close)
+        case (125, false): model.send(.move(1))
+        case (126, false): model.send(.move(-1))
+        case (36, false), (76, false): model.send(.activate)
+        default:
+            guard let ch = e.charactersIgnoringModifiers?.lowercased() else { return false }
+            if cmd {
+                switch ch {
+                case "f": model.send(.history)
+                case ",": model.send(.settings)
+                case "p": model.send(.pause)
+                case "q": model.send(.quit)
+                default: return false
                 }
-            }
-            Spacer(minLength: 4)
-            HStack(spacing: 3) {
-                TriggerKeys(size: 8.5)
-                KeyView(key: "C", size: 8.5)
+            } else if let n = Int(ch), (1...MenuPanelView.recentCount).contains(n) {
+                model.send(.copyIndex(n - 1))
+            } else {
+                return false
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        return true
+    }
+}
+
+/// Keyboard events from the panel to its SwiftUI content.
+@Observable
+final class MenuPanelModel {
+    enum Command: Equatable { case close, move(Int), activate, copyIndex(Int), history, settings, pause, quit }
+    var command: (id: Int, value: Command)?
+    func send(_ c: Command) { command = ((command?.id ?? 0) + 1, c) }
+}
+
+struct MenuPanelView: View {
+    static let recentCount = 5
+
+    struct Actions {
+        var copy: (History.Item) -> Void
+        var close: () -> Void
+        var history: () -> Void
+        var shelf: () -> Void
+        var settings: () -> Void
+        var welcome: () -> Void
+        var updates: () -> Void
+        var showUpdate: () -> Void
+        var pause: () -> Void
+        var toggleApp: (String) -> Void
+        var prefer: (String, GrabMode?) -> Void
+        var quit: () -> Void
+    }
+
+    let frontApp: (name: String, bundleID: String)?
+    let actions: Actions
+
+    @Environment(MenuPanelModel.self) private var model
+    @State private var history = History.shared
+    @State private var settings = Settings.shared
+    @State private var selected: Int?
+    @State private var copied: UUID?
+
+    private var recent: [History.Item] { Array(history.items.prefix(Self.recentCount)) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if let update = Updater.shared.available { updateBanner(update) }
+            divider
+            recentSection
+            divider
+            footer
+        }
+        .padding(6)
+        .frame(width: 340)
+        .background(HUDBackground(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.75))
+        .onChange(of: model.command?.id) { _, _ in
+            guard let c = model.command?.value else { return }
+            handle(c)
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        let p = Permissions.shared
+        let (color, text): (Color, String) = {
+            if !p.accessibility { return (.orange, "Needs Accessibility access") }
+            if settings.paused { return (.secondary, "Paused") }
+            if !p.screenRecording { return (.yellow, "Text and links only") }
+            return (.green, "Ready")
+        }()
+        return HStack(spacing: 11) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 36, height: 36)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Grab").font(.system(size: 14, weight: .semibold))
+                HStack(spacing: 6) {
+                    Circle().fill(color).frame(width: 6, height: 6)
+                    Text(text).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 6)
+            if !p.accessibility || !p.screenRecording {
+                Button("Finish Setup", action: actions.welcome)
+                    .buttonStyle(PillButtonStyle(prominent: true))
+            } else {
+                HStack(spacing: 3) {
+                    TriggerKeys(size: 9)
+                    KeyView(key: "C", size: 9)
+                }
+                .opacity(0.85)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+
+    private func updateBanner(_ u: Updater.Release) -> some View {
+        Button(action: actions.showUpdate) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill")
+                Text("Grab \(u.version) is ready").fontWeight(.semibold)
+                Spacer()
+                Text("Update").fontWeight(.semibold)
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LinearGradient(colors: Theme.brand, startPoint: .leading, endPoint: .trailing)))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 8)
+    }
+
+    private var divider: some View {
+        Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1).padding(.horizontal, 8)
+    }
+
+    // MARK: Recent
+
+    private var recentSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Recent").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                if !history.items.isEmpty {
+                    Button(action: actions.history) {
+                        HStack(spacing: 4) {
+                            Text("All History")
+                            Text("⌘F").foregroundStyle(.tertiary)
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 9)
+            .padding(.bottom, 4)
+
+            if recent.isEmpty {
+                HStack(spacing: 10) {
+                    MascotIdle(kind: MascotKind(rawValue: settings.mascot) ?? .snap).frame(width: 44, height: 40).scaleEffect(0.75)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Nothing grabbed yet").font(.system(size: 12.5, weight: .medium))
+                        Text("Hold \(settings.trigger.symbol) over anything and press C").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
+            } else {
+                ForEach(Array(recent.enumerated()), id: \.element.id) { i, h in
+                    RecentRow(item: h, number: i + 1, selected: selected == i, copied: copied == h.id)
+                        .contentShape(Rectangle())
+                        .onHover { inside in
+                            if inside { selected = i } else if selected == i { selected = nil }
+                        }
+                        .onTapGesture { copy(h) }
+                }
+            }
+            if !Shelf.shared.items.isEmpty {
+                Button(action: actions.shelf) {
+                    Label("Shelf · \(Shelf.shared.items.count) items", systemImage: "tray.full")
+                        .font(.system(size: 12))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(RowButtonStyle())
+            }
+        }
+        .padding(.bottom, 6)
+    }
+
+    // MARK: Footer
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            Button(action: actions.pause) {
+                Label(settings.paused ? "Resume" : "Pause", systemImage: settings.paused ? "play.fill" : "pause.fill")
+            }
+            .buttonStyle(PillButtonStyle())
+            .help(settings.paused ? "Resume Grab (⌘P)" : "Pause Grab (⌘P)")
+            Button(action: actions.settings) {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .buttonStyle(PillButtonStyle())
+            .help("Settings (⌘,)")
+            Spacer(minLength: 0)
+            Menu {
+                if let app = frontApp {
+                    let off = settings.excludedApps.contains(app.bundleID)
+                    Section(app.name) {
+                        Button(off ? "Turn Grab On in \(app.name)" : "Turn Grab Off in \(app.name)") { actions.toggleApp(app.bundleID) }
+                        Picker("Preferred Type", selection: Binding(
+                            get: { settings.appRules[app.bundleID] ?? -1 },
+                            set: { actions.prefer(app.bundleID, $0 < 0 ? nil : GrabMode(rawValue: $0)) }
+                        )) {
+                            Text("Automatic").tag(-1)
+                            ForEach(GrabMode.allCases) { Text($0.title).tag($0.rawValue) }
+                        }
+                    }
+                }
+                Section {
+                    Button("Welcome & Practice…", action: actions.welcome)
+                    Button("Check for Updates…", action: actions.updates)
+                }
+                Section {
+                    Button("Quit Grab", action: actions.quit)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 30, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
+    // MARK: Actions
+
+    private func copy(_ h: History.Item) {
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { copied = h.id }
+        actions.copy(h)
+    }
+
+    private func handle(_ c: MenuPanelModel.Command) {
+        switch c {
+        case .close: actions.close()
+        case .move(let d):
+            guard !recent.isEmpty else { return }
+            let n = (selected ?? (d > 0 ? -1 : recent.count)) + d
+            selected = min(max(n, 0), recent.count - 1)
+        case .activate:
+            if let i = selected, recent.indices.contains(i) { copy(recent[i]) }
+        case .copyIndex(let i):
+            if recent.indices.contains(i) { copy(recent[i]) }
+        case .history: actions.history()
+        case .settings: actions.settings()
+        case .pause: actions.pause()
+        case .quit: actions.quit()
+        }
+    }
+}
+
+/// One recent grab: a small preview tile, what it is, where it came from.
+private struct RecentRow: View {
+    let item: History.Item
+    let number: Int
+    let selected: Bool
+    let copied: Bool
+
+    var body: some View {
+        HStack(spacing: 11) {
+            tile
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            if copied {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .transition(.scale.combined(with: .opacity))
+            } else {
+                Text("\(number)")
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.primary.opacity(selected ? 0.1 : 0.05)))
+                    .opacity(selected ? 1 : 0.6)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(selected ? 0.08 : 0))
+        )
+        .padding(.horizontal, 2)
+        .animation(.easeOut(duration: 0.12), value: selected)
+    }
+
+    private var title: String {
+        if item.isSecret { return "Secret ••••••" }
+        if let t = item.text, t.uppercased().hasPrefix("WIFI:") { return "Wi-Fi “\(Formats.wifi(t).network ?? "network")”" }
+        if case .file(let u) = item.payload { return u.lastPathComponent }
+        return Formats.oneLine(item.text ?? item.title).truncated(80)
+    }
+
+    private var subtitle: String {
+        var parts: [String] = [item.mode.title]
+        if let a = item.appName { parts.append(a) }
+        parts.append(Self.when(item.date))
+        return parts.joined(separator: " · ")
+    }
+
+    private static let relative: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f
+    }()
+
+    static func when(_ d: Date) -> String {
+        Date().timeIntervalSince(d) < 60 ? "just now" : relative.localizedString(for: d, relativeTo: Date())
+    }
+
+    @ViewBuilder private var tile: some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        Group {
+            if let c = item.color {
+                shape.fill(Color(nsColor: c.nsColor))
+            } else if let t = item.thumbnail {
+                Image(nsImage: t).resizable().aspectRatio(contentMode: .fill)
+            } else if case .file(let u) = item.payload {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: u.path)).resizable().padding(2)
+            } else {
+                ZStack {
+                    shape.fill(LinearGradient(colors: Theme.colors(for: item.mode).map { $0.opacity(0.22) }, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Image(systemName: item.kind.symbol)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(LinearGradient(colors: Theme.colors(for: item.mode), startPoint: .topLeading, endPoint: .bottomTrailing))
+                }
+            }
+        }
+        .frame(width: 32, height: 32)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+    }
+}
+
+private struct RowButtonStyle: ButtonStyle {
+    @State private var hovering = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(configuration.isPressed ? 0.12 : (hovering ? 0.08 : 0))))
+            .padding(.horizontal, 2)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+    }
+}
+
+/// Small rounded buttons for the footer.
+struct PillButtonStyle: ButtonStyle {
+    var prominent = false
+    @State private var hovering = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11.5, weight: .medium))
+            .labelStyle(.titleAndIcon)
+            .foregroundStyle(prominent ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.primary.opacity(0.85)))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                Capsule().fill(prominent
+                    ? AnyShapeStyle(LinearGradient(colors: Theme.brand, startPoint: .leading, endPoint: .trailing))
+                    : AnyShapeStyle(Color.primary.opacity(configuration.isPressed ? 0.14 : (hovering ? 0.1 : 0.06))))
+            )
+            .contentShape(Capsule())
+            .onHover { hovering = $0 }
     }
 }

@@ -92,6 +92,8 @@ final class Settings {
     var quickCopy: Bool { didSet { save("quickCopy", quickCopy) } }
     var paused: Bool { didSet { save("paused", paused) } }
     var colorFormat: ColorFormat { didSet { save("colorFormat", colorFormat.rawValue) } }
+    /// Copied images get softly rounded corners.
+    var roundImageCorners: Bool { didSet { save("roundImageCorners", roundImageCorners) } }
     var historyLimit: Int { didSet { save("historyLimit", historyLimit) } }
     /// Save history between launches, encrypted (off: memory only).
     var keepHistory: Bool { didSet { save("keepHistory", keepHistory) } }
@@ -139,6 +141,7 @@ final class Settings {
             "quickCopy": true,
             "paused": false,
             "colorFormat": ColorFormat.hex.rawValue,
+            "roundImageCorners": true,
             "historyLimit": 12,
             "keepHistory": false,
             "keepHistoryDays": 7,
@@ -168,6 +171,7 @@ final class Settings {
         quickCopy = d.bool(forKey: "quickCopy")
         paused = d.bool(forKey: "paused")
         colorFormat = ColorFormat(rawValue: d.string(forKey: "colorFormat") ?? "") ?? .hex
+        roundImageCorners = d.bool(forKey: "roundImageCorners")
         historyLimit = d.integer(forKey: "historyLimit")
         keepHistory = d.bool(forKey: "keepHistory")
         keepHistoryDays = d.integer(forKey: "keepHistoryDays")

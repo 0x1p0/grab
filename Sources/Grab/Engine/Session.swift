@@ -1509,7 +1509,11 @@ final class Session {
             case "datauri":
                 guard let uri = ImageTools.dataURI(img) else { return failed("Couldn't encode the image") }
                 return .success(.text(uri))
-            default: break
+            default:
+                // Rounded corners, so the image pastes looking finished.
+                if Settings.shared.roundImageCorners, let rounded = ImageTools.rounded(img, pointSize: size) {
+                    return .success(.image(rounded, pointSize: size))
+                }
             }
         default: break
         }

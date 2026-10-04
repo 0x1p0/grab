@@ -68,6 +68,24 @@ enum ImageTools {
         return out.map { RGBAColor(r: $0.x, g: $0.y, b: $0.z) }
     }
 
+    /// The image with softly rounded corners (transparent outside), about 10 points at the
+    /// image's own scale, never more than 6% of its shorter side. Nil for tiny images.
+    static func rounded(_ image: CGImage, pointSize: CGSize, points: CGFloat = 10) -> CGImage? {
+        let w = image.width, h = image.height
+        guard min(w, h) >= 48 else { return nil }
+        let scale = pointSize.width > 0 ? CGFloat(w) / pointSize.width : 2
+        let radius = min(points * max(scale, 1), CGFloat(min(w, h)) * 0.06)
+        guard radius >= 2, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let rect = CGRect(x: 0, y: 0, width: w, height: h)
+        ctx.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.clip()
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: rect)
+        return ctx.makeImage()
+    }
+
     static func pngData(_ image: CGImage) -> Data? {
         NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
     }

@@ -151,6 +151,10 @@ struct SettingsView: View {
                     Text("Collect on the shelf")
                     Text("Adds to a floating shelf you can reorder; the clipboard always holds the whole shelf.")
                 }
+                Toggle(isOn: $settings.roundImageCorners) {
+                    Text("Round the corners of copied images")
+                    Text("Images paste with soft corners, like a finished screenshot. Turn off for pixel-exact copies.")
+                }
                 Toggle(isOn: $settings.adaptivePaste) {
                     Text("Adapt code to where you paste")
                     Text("Pasting into a terminal drops the $ prompts; Slack, Discord, Notion and Obsidian get a code block.")

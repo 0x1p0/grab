@@ -170,7 +170,7 @@ Native editors and Safari report exact character positions. VS Code-style editor
 | **Stack traces & errors** | The error line · a search link · the trace with library frames folded away |
 | **Text** | One line · quote · **cite** (with page title and URL) · font name, size and color (CSS in browsers) · CSS selector |
 | **Links** | URL · Markdown · title · YouTube **at the current time** (`youtu.be/…?t=93`) |
-| **Images** | Image · **subject only** · color palette · data URI |
+| **Images** | Image (with softly rounded corners; switch off in Settings) · **subject only** · color palette · data URI |
 | **Files** | File · path · name · app icon at 1024 px |
 | **Code** | Code · Markdown · `path:line` · permalink · **Picture** |
 | **Anything** | Your own templates (`{text}`, `{url}`, `{title}`, `{app}`, `{date}`… with filters like `\|upper` and `\|slug`) and Shortcuts |

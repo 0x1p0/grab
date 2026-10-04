@@ -228,3 +228,24 @@ final class StatsTests: XCTestCase {
         XCTAssertTrue(ImageFingerprint.differs(ImageFingerprint.of(solid(0.2)), ImageFingerprint.of(solid(0.8))))
     }
 }
+
+final class RoundedImageTests: XCTestCase {
+    func testCornersBecomeTransparent() throws {
+        let ctx = CGContext(data: nil, width: 200, height: 120, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 200, height: 120))
+        let img = try XCTUnwrap(ctx.makeImage())
+        let r = try XCTUnwrap(ImageTools.rounded(img, pointSize: CGSize(width: 100, height: 60)))
+        XCTAssertEqual(r.width, 200)
+        let rep = NSBitmapImageRep(cgImage: r)
+        XCTAssertEqual(rep.colorAt(x: 0, y: 0)?.alphaComponent ?? 1, 0, accuracy: 0.01)
+        XCTAssertEqual(rep.colorAt(x: 199, y: 119)?.alphaComponent ?? 1, 0, accuracy: 0.01)
+        XCTAssertEqual(rep.colorAt(x: 100, y: 60)?.alphaComponent ?? 0, 1, accuracy: 0.01)
+        XCTAssertEqual(rep.colorAt(x: 100, y: 0)?.alphaComponent ?? 0, 1, accuracy: 0.01)
+        // Tiny images are left alone.
+        let tiny = CGContext(data: nil, width: 20, height: 20, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        XCTAssertNil(ImageTools.rounded(tiny, pointSize: CGSize(width: 10, height: 10)))
+    }
+}
