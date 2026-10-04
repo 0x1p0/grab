@@ -95,6 +95,27 @@ final class Session {
 
     private let inspector = Inspector()
     private let axQueue = DispatchQueue(label: "app.grab.ax", qos: .userInteractive)
+    private static let myPID = getpid()
+
+    /// Accessibility work runs in order on its own queue, so the HUD never waits on a slow
+    /// app. Grab's own windows are the exception: macOS answers questions about them
+    /// in-process, on whichever thread asks, and their views may only be touched on the
+    /// main thread. That work still waits its turn on the queue, but runs on the main thread.
+    private func onAXQueue(own: Bool, _ work: @escaping () -> Void) {
+        axQueue.async {
+            if own { DispatchQueue.main.sync(execute: work) } else { work() }
+        }
+    }
+
+    private static func isOwn(_ e: AXUIElement?) -> Bool { e.map { $0.pid == myPID } ?? false }
+
+    /// Whether the pointer is over one of Grab's own windows (Settings, Welcome, a pin, the
+    /// menu bar icon…). Errs on the side of yes: then the work just runs on the main thread.
+    private func ownWindow(at p: CGPoint) -> Bool {
+        NSApp.windows.contains { w in
+            w.isVisible && !(w is OverlayWindow) && ScreenSpace.toAX(w.frame).contains(p)
+        }
+    }
 
     private(set) var armed = false
     private var debugHold = false
@@ -401,7 +422,8 @@ final class Session {
         dirty = false
         let p = lastPoint
         let gen = generation
-        axQueue.async { [inspector, weak self] in
+        let inspector = self.inspector
+        onAXQueue(own: ownWindow(at: p)) { [weak self] in
             let ins = inspector.inspect(at: p)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -969,7 +991,8 @@ final class Session {
             guard resolvedTables[key] == nil, !resolvingTables.contains(key) else { return }
             resolvingTables.insert(key)
             let gen = generation
-            axQueue.async { [inspector, weak self] in
+            let inspector = self.inspector
+            onAXQueue(own: Self.isOwn(ref.table)) { [weak self] in
                 let text = inspector.tableText(ref)
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -989,7 +1012,8 @@ final class Session {
         resolving.insert(key)
         let web = inspection?.webArea
         let gen = generation
-        axQueue.async { [inspector, weak self] in
+        let inspector = self.inspector
+        onAXQueue(own: Self.isOwn(e)) { [weak self] in
             let text = inspector.resolveText(for: s, webArea: web)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -1007,7 +1031,7 @@ final class Session {
         let web = inspection?.webArea
         let inspector = self.inspector
         return await withCheckedContinuation { c in
-            axQueue.async { c.resume(returning: inspector.resolveText(for: s, webArea: web)) }
+            onAXQueue(own: Self.isOwn(s.element)) { c.resume(returning: inspector.resolveText(for: s, webArea: web)) }
         }
     }
 
@@ -1473,9 +1497,9 @@ final class Session {
         let info = formatInfo(s, m)
         let f = info.selected?.id ?? ""
         let inspector = self.inspector
-        let queue = axQueue
+        let own = Self.isOwn(s.element ?? inspection?.leaf)
         func onAX<T>(_ work: @escaping @Sendable () -> T) async -> T {
-            await withCheckedContinuation { c in queue.async { c.resume(returning: work()) } }
+            await withCheckedContinuation { c in onAXQueue(own: own) { c.resume(returning: work()) } }
         }
         func failed(_ why: String) -> Result<Payload, Error> { .failure(GrabError.failed(why)) }
 
@@ -1660,7 +1684,7 @@ final class Session {
                 if let t = s.text?.cleanedForClipboard.nonBlank { return .success(.text(t)) }
                 if s.textPending, let ref = s.tableRef {
                     let inspector = self.inspector
-                    let t = await withCheckedContinuation { c in axQueue.async { c.resume(returning: inspector.tableText(ref)) } }
+                    let t = await withCheckedContinuation { c in onAXQueue(own: Self.isOwn(ref.table)) { c.resume(returning: inspector.tableText(ref)) } }
                     if let t = t?.nonBlank { return .success(.text(t)) }
                     throw GrabError.noText
                 }
@@ -2263,7 +2287,7 @@ final class Session {
             return
         }
         let result: (filled: Int, fields: Int)? = await withCheckedContinuation { c in
-            axQueue.async {
+            onAXQueue(own: Self.isOwn(start)) {
                 guard let root = inspector.formRoot(around: start) else { return c.resume(returning: nil) }
                 c.resume(returning: inspector.fillForm(root, with: values))
             }
@@ -2486,7 +2510,7 @@ final class Session {
             debugTrace.removeAll()
             out["preview"] = "\(model.preview)".truncated(300)
             out["toast"] = model.toast.map { "\($0.title) — \($0.detail)" } ?? ""
-            out["note"] = axQueue.sync { Inspector.fillNote }
+            out["note"] = Inspector.fillNote
         }
         return out
     }

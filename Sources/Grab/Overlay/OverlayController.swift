@@ -4,6 +4,14 @@ import SwiftUI
 final class OverlayWindow: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    // Grab asks "what's under the pointer?" from a background thread. When the answer is
+    // the overlay itself (the HUD, the mascot), AppKit would walk its SwiftUI views on that
+    // thread, and views may only be touched on the main thread. The overlay isn't meant for
+    // accessibility anyway, so it answers at once without touching them.
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? { self }
+    override func isAccessibilityElement() -> Bool { false }
+    override func accessibilityChildren() -> [Any]? { [] }
 }
 
 /// A screen's geometry in global top-left points.

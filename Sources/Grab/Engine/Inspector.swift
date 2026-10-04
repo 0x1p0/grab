@@ -84,8 +84,10 @@ final class Inspector {
         if AXUIElementCopyElementAtPosition(systemWide, Float(p.x), Float(p.y), &found) == .success, let e = found {
             if e.pid != myPID { return e }
             // We hit ourselves. That's right if the cursor is over one of our real
-            // windows (onboarding playground, settings), wrong if it's the overlay.
-            if let top = WindowList.top(at: p, accept: { $0.layer < WindowList.overlayLayer }), top.pid == myPID {
+            // windows (onboarding playground, settings), wrong if it's the overlay. Our own
+            // elements are only ever read on the main thread (see Session.onAXQueue): off it,
+            // look past ourselves.
+            if Thread.isMainThread, let top = WindowList.top(at: p, accept: { $0.layer < WindowList.overlayLayer }), top.pid == myPID {
                 return e
             }
         }
