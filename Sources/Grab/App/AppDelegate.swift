@@ -36,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyTap.onAction = { [weak self] action in self?.session.handle(action) }
 
         applySettings()
+        // Badges already reached by grabs made before they existed.
+        Badges.shared.catchUp()
         NotificationCenter.default.addObserver(forName: .grabSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applySettings() }
         }

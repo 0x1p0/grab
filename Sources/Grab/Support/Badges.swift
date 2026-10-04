@@ -31,20 +31,36 @@ enum Badge: String, CaseIterable, Identifiable {
     /// How it's earned.
     var detail: String {
         switch self {
-        case .firstGrab: "Your first grab"
-        case .century: "100 grabs. Comes with sunglasses"
-        case .royalty: "1,000 grabs. Comes with a crown"
-        case .nightOwl: "A grab between 2 and 5 a.m."
-        case .earlyBird: "A grab between 5 and 7 a.m."
-        case .chromatic: "50 colors picked"
-        case .polyglot: "Text grabbed in 5 languages"
-        case .comboKing: "A ×10 combo"
-        case .detective: "25 grabs of text inside pictures"
-        case .codeMonkey: "100 grabs of code"
-        case .boxer: "25 boxes drawn"
-        case .onARoll: "Grabs 7 days in a row"
-        case .bestFriends: "Pet your mascot 25 times"
-        case .testingPatience: "Poke your mascot until it walks off"
+        case .firstGrab: "Make your first grab."
+        case .century: "Grab 100 things. Unlocks sunglasses."
+        case .royalty: "Grab 1,000 things. Unlocks a crown."
+        case .nightOwl: "Grab something between 2 and 5 a.m."
+        case .earlyBird: "Grab something between 5 and 7 a.m."
+        case .chromatic: "Pick 50 colors."
+        case .polyglot: "Grab text in 5 different languages."
+        case .comboKing: "Make 10 grabs in a row, each within 5 seconds of the last."
+        case .detective: "Grab text from inside 25 pictures or videos."
+        case .codeMonkey: "Grab code 100 times."
+        case .boxer: "Draw 25 boxes with ⌥R."
+        case .onARoll: "Grab something 7 days in a row."
+        case .bestFriends: "Pet your mascot 25 times."
+        case .testingPatience: "Poke your mascot until it walks off."
+        }
+    }
+
+    /// What the progress counts ("64 of 100 grabs").
+    var unit: String {
+        switch self {
+        case .century, .royalty: "grabs"
+        case .chromatic: "colors"
+        case .polyglot: "languages"
+        case .comboKing: "in a row"
+        case .detective: "pictures"
+        case .codeMonkey: "code grabs"
+        case .boxer: "boxes"
+        case .onARoll: "days"
+        case .bestFriends: "pets"
+        default: ""
         }
     }
 
@@ -178,6 +194,25 @@ final class Badges {
         award(.codeMonkey, stats.count(.code) >= 100)
         award(.boxer, stats.count(.box) >= 25)
         award(.onARoll, bestStreak >= 7)
+        return new
+    }
+
+    /// Badges already reached by count (from grabs made before badges existed): awarded quietly.
+    @discardableResult
+    func catchUp(stats: Stats = .shared, pets: Int = Buddy.shared.petsTotal, at now: Date = Date()) -> [Badge] {
+        var new: [Badge] = []
+        for b in Badge.allCases {
+            guard !has(b) else { continue }
+            let reached: Bool
+            if b == .firstGrab {
+                reached = stats.total >= 1
+            } else if let (so, target) = progress(b, stats: stats, pets: pets) {
+                reached = so >= target
+            } else {
+                reached = false
+            }
+            if reached, unlock(b, at: now) { new.append(b) }
+        }
         return new
     }
 

@@ -248,8 +248,9 @@ final class Session {
         // The mascot wakes (if it dozed off) and peeks out from under the menu bar.
         let kind = MascotKind(rawValue: s.mascot) ?? .snap
         let wasAsleep = Buddy.shared.wake()
+        // Never alongside a trip or a shrug already on screen: one mascot at a time.
         let peekOK = s.mascotPeek && kind != .off && kind != .classic && !Buddy.shared.isAway
-            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            && model.fly == nil && model.oops == nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         withTransaction(t) {
             model.pet = nil
             model.petHover = false
@@ -1965,6 +1966,9 @@ final class Session {
 
     private func fly(_ f: Fly) -> TimeInterval {
         overlay.show()
+        // The peeking mascot is the one that goes: it doesn't stay behind to watch itself.
+        model.peek = nil
+        model.petHover = false
         model.fly = f
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if !reduceMotion {
@@ -2000,6 +2004,8 @@ final class Session {
         let kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
         if kind != .off, kind != .classic, !Buddy.shared.isAway, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let oops = Oops(at: lastPoint, kind: kind)
+            model.peek = nil
+            model.petHover = false
             model.oops = oops
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.25) { [weak self] in
                 if self?.model.oops?.id == oops.id { self?.model.oops = nil }

@@ -34,7 +34,6 @@ struct SettingsView: View {
                 }
                 .padding(.vertical, 4)
                 StatsRow()
-                BadgesRow()
             }
 
             Section {
@@ -89,26 +88,9 @@ struct SettingsView: View {
                     Text("Spotlight")
                     Text("Gently dims everything except what you're about to grab.")
                 }
-                MascotPicker(selection: $settings.mascot)
-                if settings.mascot != MascotKind.off.rawValue && settings.mascot != MascotKind.classic.rawValue {
-                    Toggle(isOn: $settings.mascotPeek) {
-                        Text("Peek while you hold \(settings.trigger.symbol)")
-                        Text("It watches from under the menu bar, dozes off if you've been away, and wakes with a start. Point at it and press C to pet it (not too much).")
-                    }
-                    if NSScreen.screens.contains(where: { Notch.rect(on: $0) != nil }) {
-                        Toggle(isOn: $settings.notchCatch) {
-                            Text("Catch grabs in the notch")
-                            Text("The notch opens up, the mascot pops out, and your grab disappears into it.")
-                        }
-                    }
-                    Toggle(isOn: $settings.wearOutfits) {
-                        Text("Earned outfits")
-                        Text(outfitStatus)
-                    }
-                }
                 Toggle(isOn: $settings.combos) {
                     Text("Combos")
-                    Text("Grabs a few seconds apart climb in pitch; every fifth gets a burst of confetti.")
+                    Text("Grabs within 5 seconds of each other ring a step higher; every fifth gets a burst of confetti.")
                 }
                 Toggle("Keyboard hints in the HUD", isOn: $settings.showHints)
                 Toggle(isOn: $settings.overlayInRecordings) {
@@ -117,6 +99,42 @@ struct SettingsView: View {
                 }
             } header: {
                 Text("Feel")
+            }
+
+            Section {
+                MascotPicker(selection: $settings.mascot)
+                if settings.mascot != MascotKind.off.rawValue && settings.mascot != MascotKind.classic.rawValue {
+                    if NSScreen.screens.contains(where: { Notch.rect(on: $0) != nil }) {
+                        Toggle(isOn: $settings.notchCatch) {
+                            Text("Catch grabs in the notch")
+                            Text("The notch opens up, the mascot pops out, and your grab disappears into it.")
+                        }
+                    }
+                    Toggle(isOn: $settings.mascotPeek) {
+                        Text("Peek while you hold \(settings.trigger.symbol)")
+                        Text("It looks out from under the menu bar for a few seconds. Point at it and press C to pet it (not too much).")
+                    }
+                    Toggle(isOn: $settings.wearOutfits) {
+                        Text("Earned outfits")
+                        Text(outfitStatus)
+                    }
+                    Toggle(isOn: $settings.seasonal) {
+                        Text("Seasonal outfits")
+                        Text("Dressed up for Halloween and the winter holidays.")
+                    }
+                }
+            } header: {
+                Text("Mascot")
+            }
+
+            Section {
+                BadgesGrid()
+            } header: {
+                BadgesHeader()
+            } footer: {
+                Text("Earned by using Grab. Counts include every grab since you installed it.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -341,10 +359,6 @@ struct SettingsView: View {
                     Text("Check for updates automatically")
                     Text("About once a day Grab asks GitHub for the latest release. Nothing about you or your grabs is sent, and nothing installs without your OK.")
                 }
-                Toggle(isOn: $settings.seasonal) {
-                    Text("Seasonal outfits")
-                    Text("Mascots dress up for Halloween and the winter holidays.")
-                }
                 HStack {
                     Button("Welcome & Playground…", action: openOnboarding)
                     Spacer()
@@ -366,49 +380,75 @@ struct SettingsView: View {
     }
 }
 
-/// Every badge: earned ones in color, the rest grey with how far along you are.
-private struct BadgesRow: View {
+private struct BadgesHeader: View {
     @State private var badges = Badges.shared
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Badges").font(.system(size: 12, weight: .semibold))
-                Text("\(badges.earnedCount) of \(Badge.allCases.count)").font(.system(size: 11)).foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    Panels.shared.showWrapped()
-                } label: {
-                    Label("Grab Wrapped", systemImage: "sparkles.rectangle.stack")
-                }
-                .controlSize(.small)
-                .help("Your month in grabs, as a card to share")
-            }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 10) {
-                ForEach(Badge.allCases) { b in
-                    let earned = badges.has(b)
-                    let progress = badges.progress(b)
-                    VStack(spacing: 4) {
-                        BadgeMedal(badge: b, earned: earned, size: 34)
-                        if !earned, let (now, target) = progress {
-                            ProgressView(value: Double(now), total: Double(target))
-                                .progressViewStyle(.linear)
-                                .frame(width: 30)
-                                .controlSize(.mini)
-                        }
-                    }
-                    .frame(height: 46, alignment: .top)
-                    .help(help(b, earned: earned, progress: progress))
-                }
-            }
+        HStack {
+            Text("Badges")
+            Spacer()
+            Text("\(badges.earnedCount) of \(Badge.allCases.count) earned").foregroundStyle(.secondary)
         }
-        .padding(.vertical, 2)
+    }
+}
+
+/// Every badge with what it takes: earned ones in color with the date, the rest with how far along you are.
+struct BadgesGrid: View {
+    @State private var badges: Badges
+    @State private var stats = Stats.shared
+    @State private var buddy = Buddy.shared
+
+    init(badges: Badges = .shared) {
+        _badges = State(initialValue: badges)
     }
 
-    private func help(_ b: Badge, earned: Bool, progress: (Int, Int)?) -> String {
-        if earned, let d = badges.earned[b.rawValue] { return "\(b.title): \(b.detail). Earned \(d.formatted(date: .abbreviated, time: .omitted))." }
-        if let (now, target) = progress { return "\(b.title): \(b.detail). \(now) of \(target)." }
-        return "\(b.title): \(b.detail)."
+    var body: some View {
+        // Earned first; otherwise always the same order, so nothing jumps around as you grab.
+        let all = Badge.allCases.filter { badges.has($0) } + Badge.allCases.filter { !badges.has($0) }
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8, alignment: .top), GridItem(.flexible(), spacing: 8, alignment: .top)], spacing: 8) {
+            ForEach(all) { b in card(b) }
+        }
+        .padding(.vertical, 4)
+        .onAppear { badges.catchUp() }
+    }
+
+    private func progress(_ b: Badge) -> (Int, Int)? { badges.progress(b, stats: stats, pets: buddy.petsTotal) }
+
+    private func card(_ b: Badge) -> some View {
+        let earned = badges.has(b)
+        return HStack(alignment: .top, spacing: 10) {
+            BadgeMedal(badge: b, earned: earned, size: 34)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(b.title).font(.system(size: 12.5, weight: .semibold))
+                Text(b.detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if earned, let d = badges.earned[b.rawValue] {
+                    Label("Earned \(d.formatted(.dateTime.month(.abbreviated).day()))", systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(b.colors.first ?? .green)
+                } else if let (now, target) = progress(b) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        GeometryReader { g in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.primary.opacity(0.08))
+                                Capsule().fill(LinearGradient(colors: b.colors, startPoint: .leading, endPoint: .trailing))
+                                    .frame(width: max(now > 0 ? 4 : 0, g.size.width * CGFloat(now) / CGFloat(max(1, target))))
+                            }
+                        }
+                        .frame(height: 4)
+                        Text(b == .comboKing ? "Best ×\(now) of ×\(target)" : "\(now.formatted()) of \(target.formatted()) \(b.unit)")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 1)
+                } else {
+                    Text("Not yet").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(earned ? 0.05 : 0.025)))
     }
 }
 
@@ -775,6 +815,9 @@ private struct StatsRow: View {
                 }
                 .controlSize(.small)
                 .help("Copies a picture of your stats to paste anywhere")
+                Button("Wrapped") { Panels.shared.showWrapped() }
+                    .controlSize(.small)
+                    .help("Your month in grabs, as a card to share")
             }
         }
     }

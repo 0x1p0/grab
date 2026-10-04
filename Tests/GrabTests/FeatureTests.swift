@@ -590,3 +590,16 @@ final class FunFormatTests: XCTestCase {
         XCTAssertGreaterThan(p.pointSize.height, 150 + 40, "the wide bottom edge")
     }
 }
+
+extension BadgeTests {
+    func testCatchUpAwardsWhatCountsAlreadyReach() {
+        let t = TestDefaults()
+        let b = Badges(defaults: t.d)
+        // Pets are counted elsewhere; 25 already reaches Best Friends.
+        let new = b.catchUp(pets: 25)
+        XCTAssertTrue(new.contains(.bestFriends))
+        XCTAssertFalse(new.contains(.nightOwl), "time-of-day badges need a grab at that time")
+        XCTAssertTrue(b.catchUp(pets: 25).isEmpty, "only once")
+        XCTAssertEqual(Badge.century.unit, "grabs")
+    }
+}
