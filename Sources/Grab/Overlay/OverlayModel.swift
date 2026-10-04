@@ -22,6 +22,10 @@ struct Toast: Equatable, Identifiable {
     var mode: GrabMode
     var color: RGBAColor?
     var thumb: CGImage?
+    /// Grabs in a row so far (shown from ×2).
+    var combo = 0
+    /// A badge, shown as its medal instead of the check.
+    var badge: Badge?
 }
 
 /// A grab on its way to the menu bar, carried by a mascot.
@@ -38,6 +42,10 @@ struct Fly: Equatable, Identifiable {
     var start = Date()
     /// A big image or a long text: the mascot strains under it.
     var heavy = false
+    /// Carried into the notch (global rect) instead of the menu bar icon.
+    var notch: CGRect?
+    /// 20+ grabs today: it flips for joy on the way.
+    var pumped = false
 
     static func == (a: Fly, b: Fly) -> Bool { a.id == b.id }
 }
@@ -73,6 +81,11 @@ final class OverlayModel {
     var warning: String?
     var fly: Fly?
     var oops: Oops?
+    /// The mascot peeking out while ⌥ is held, a poke at it, and whether the pointer is on it.
+    var peek: Peek?
+    var pet: PetEvent?
+    var petHover = false
+    var burst: Burst?
     var formats: [FormatOption] = []
     var format: String?
     /// A color written in text (#ED6E2A) rather than picked from pixels.

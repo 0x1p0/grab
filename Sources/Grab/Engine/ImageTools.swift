@@ -190,7 +190,16 @@ enum ImageTools {
             // a letter cut off by the edge is small. Borders are left out.
             let thin = max(2, Int((2 * scale).rounded()))
             var seen = [Bool](repeating: false, count: w * h)
-            let edge = (0..<w).flatMap { [$0, (h - 1) * w + $0] } + (0..<h).flatMap { [$0 * w, $0 * w + w - 1] }
+            var edge: [Int] = []
+            edge.reserveCapacity(2 * (w + h))
+            for x in 0..<w {
+                edge.append(x)
+                edge.append((h - 1) * w + x)
+            }
+            for y in 0..<h {
+                edge.append(y * w)
+                edge.append(y * w + w - 1)
+            }
             for start in edge where ink[start] && !seen[start] {
                 var stack = [start], members: [Int] = []
                 var bx0 = w, bx1 = -1, by0 = h, by1 = -1

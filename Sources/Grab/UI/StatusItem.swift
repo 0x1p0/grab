@@ -81,6 +81,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
                 settings: { [weak self] in self?.hide(); self?.app.openSettings() },
                 welcome: { [weak self] in self?.hide(); self?.app.openOnboarding() },
                 updates: { [weak self] in self?.hide(); self?.app.checkForUpdates() },
+                wrapped: { [weak self] in self?.hide(); Panels.shared.showWrapped() },
                 showUpdate: { [weak self] in self?.hide(); Panels.shared.showUpdate() },
                 pause: { Settings.shared.paused.toggle() },
                 toggleApp: { bid in
@@ -249,6 +250,7 @@ struct MenuPanelView: View {
         var settings: () -> Void
         var welcome: () -> Void
         var updates: () -> Void
+        var wrapped: () -> Void = {}
         var showUpdate: () -> Void
         var pause: () -> Void
         var toggleApp: (String) -> Void
@@ -379,11 +381,23 @@ struct MenuPanelView: View {
             if let cleared {
                 clearedRow(cleared)
             } else if recent.isEmpty {
+                let kind = MascotKind(rawValue: settings.mascot) ?? .snap
+                let mood = Buddy.shared.mood()
                 HStack(spacing: 10) {
-                    MascotIdle(kind: MascotKind(rawValue: settings.mascot) ?? .snap).frame(width: 44, height: 40).scaleEffect(0.75)
+                    if mood == .away {
+                        Image(systemName: "figure.walk").font(.system(size: 20, weight: .semibold)).foregroundStyle(.secondary).frame(width: 44, height: 40)
+                    } else {
+                        MascotIdle(kind: kind, mood: mood).frame(width: 44, height: 40).scaleEffect(0.75)
+                    }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Nothing grabbed yet").font(.system(size: 12.5, weight: .medium))
-                        Text("Hold \(settings.trigger.symbol) over anything and press C").font(.system(size: 11)).foregroundStyle(.secondary)
+                        if mood == .away, kind != .off, kind != .classic {
+                            Text("\(kind.title) went for a walk").font(.system(size: 12.5, weight: .medium))
+                            Text("Back in a minute. Maybe ease up on the poking?").font(.system(size: 11)).foregroundStyle(.secondary)
+                        } else {
+                            Text(mood == .sleepy && kind != .off ? "Nothing grabbed yet · \(kind.title) dozed off" : "Nothing grabbed yet")
+                                .font(.system(size: 12.5, weight: .medium))
+                            Text("Hold \(settings.trigger.symbol) over anything and press C").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
@@ -478,6 +492,7 @@ struct MenuPanelView: View {
                         .disabled(history.items.isEmpty)
                 }
                 Section {
+                    Button("Grab Wrapped…", action: actions.wrapped)
                     Button("Welcome & Practice…", action: actions.welcome)
                     Button("Check for Updates…", action: actions.updates)
                 }

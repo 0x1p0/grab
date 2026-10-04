@@ -57,6 +57,27 @@ final class Panels {
     private(set) var pins: [LivePin] = []
     private var shelfPanel: FloatingPanel?
     private var historyPanel: FloatingPanel?
+    private var wrappedPanel: FloatingPanel?
+
+    // MARK: Wrapped
+
+    func showWrapped() {
+        if wrappedPanel == nil {
+            let h = min(900, (NSScreen.main?.visibleFrame.height ?? 900) - 40)
+            let p = FloatingPanel(size: NSSize(width: 476, height: h), title: "Grab Wrapped", resizable: false)
+            p.host(WrappedPanelView(close: { [weak p] in p?.close() }))
+            p.center()
+            wrappedPanel = p
+            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: p, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.wrappedPanel?.contentView = nil
+                    self?.wrappedPanel = nil
+                }
+            }
+        }
+        NSApp.activate()
+        wrappedPanel?.makeKeyAndOrderFront(nil)
+    }
 
     private func track(_ p: NSPanel) {
         open.append(p)

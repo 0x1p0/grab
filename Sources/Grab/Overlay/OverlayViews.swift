@@ -11,11 +11,16 @@ struct OverlayRootView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.clear
-            HighlightCanvas(geo: geo, model: model)
-                .frame(width: geo.size.width, height: geo.size.height)
-            ScopeTagLayer(geo: geo, model: model)
-            LoupeLayer(geo: geo, model: model)
-            HUDLayer(geo: geo, model: model)
+            // Pointing at the peeking mascot: it gets your attention, not the border.
+            Group {
+                HighlightCanvas(geo: geo, model: model)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                ScopeTagLayer(geo: geo, model: model)
+                LoupeLayer(geo: geo, model: model)
+                HUDLayer(geo: geo, model: model)
+            }
+            .opacity(model.petHover ? 0 : 1)
+            .animation(.easeOut(duration: 0.15), value: model.petHover)
             MascotLayer(geo: geo, model: model)
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
@@ -566,10 +571,16 @@ private struct ToastContent: View {
             : [Color(hex: 0xFF9F0A), Color(hex: 0xFF453A)]
         HStack(spacing: 10) {
             ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .shadow(color: colors[0].opacity(0.5), radius: 6, y: 2)
-                if toast.success {
+                if let badge = toast.badge {
+                    BadgeMedal(badge: badge, earned: true, size: 28)
+                } else {
+                    Circle()
+                        .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .shadow(color: colors[0].opacity(0.5), radius: 6, y: 2)
+                }
+                if toast.badge != nil {
+                    EmptyView()
+                } else if toast.success {
                     CheckShape()
                         .trim(from: 0, to: drawn ? 1 : 0)
                         .stroke(.white, style: StrokeStyle(lineWidth: 2.6, lineCap: .round, lineJoin: .round))
@@ -592,6 +603,16 @@ private struct ToastContent: View {
                     .truncationMode(toast.mode == .text ? .tail : .middle)
             }
             Spacer(minLength: 0)
+            if toast.combo >= 2 {
+                Text("×\(toast.combo)")
+                    .font(.system(size: 12.5, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(LinearGradient(colors: [Color(hex: 0xFFB020), Color(hex: 0xFF5A36)], startPoint: .top, endPoint: .bottom)))
+                    .shadow(color: Color(hex: 0xFF5A36).opacity(0.45), radius: 4, y: 1)
+                    .transition(.scale.combined(with: .opacity))
+            }
             if let thumb = toast.thumb {
                 Image(decorative: thumb, scale: 1)
                     .resizable()

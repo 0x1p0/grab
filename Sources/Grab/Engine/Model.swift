@@ -272,6 +272,20 @@ struct RGBAColor: Equatable {
 
     var hex: String { String(format: "#%02X%02X%02X", byte(r), byte(g), byte(b)) }
 
+    init(r: Double, g: Double, b: Double, a: Double = 1) {
+        self.r = r
+        self.g = g
+        self.b = b
+        self.a = a
+    }
+
+    /// "#ED6E2A" (or without the #).
+    init?(hex: String) {
+        let s = hex.hasPrefix("#") ? hex.dropFirst() : Substring(hex)
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        self.init(r: Double(v >> 16 & 0xFF) / 255, g: Double(v >> 8 & 0xFF) / 255, b: Double(v & 0xFF) / 255)
+    }
+
     var hsl: (h: Int, s: Int, l: Int) {
         let maxC = max(r, g, b), minC = min(r, g, b)
         let l = (maxC + minC) / 2

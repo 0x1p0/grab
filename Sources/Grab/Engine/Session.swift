@@ -245,6 +245,16 @@ final class Session {
             model.literalColor = nil
             model.boxing = false
         }
+        // The mascot wakes (if it dozed off) and peeks out from under the menu bar.
+        let kind = MascotKind(rawValue: s.mascot) ?? .snap
+        let wasAsleep = Buddy.shared.wake()
+        let peekOK = s.mascotPeek && kind != .off && kind != .classic && !Buddy.shared.isAway
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        withTransaction(t) {
+            model.pet = nil
+            model.petHover = false
+            model.peek = peekOK ? peekAnchor(near: lastPoint).map { Peek(anchor: $0.point, kind: kind, sleepy: wasAsleep, notch: $0.notch) } : nil
+        }
         withAnimation(.easeOut(duration: 0.16)) { model.visible = true }
         overlay.show()
 
@@ -285,6 +295,7 @@ final class Session {
         pendingCopy = false
         boxAnchor = nil
         model.boxing = false
+        model.petHover = false
         withAnimation(.easeOut(duration: cancelled ? 0.12 : 0.2)) {
             model.visible = false
         }
@@ -349,6 +360,18 @@ final class Session {
             lastPoint = p
             dirty = true
             if model.pixelColor { model.cursor = p }
+        }
+        if var peek = model.peek {
+            // Pointing at it keeps it out; otherwise it ducks back after a few seconds.
+            let now = Date()
+            let hover = peek.isOut(at: now) && peek.hitRect.contains(p) && !Buddy.shared.isAway
+            model.set(\.petHover, hover)
+            if hover, peek.retractAt.timeIntervalSince(now) < 1 {
+                peek.retractAt = now.addingTimeInterval(1.5)
+                model.peek = peek
+            }
+        } else {
+            model.set(\.petHover, false)
         }
         let now = CACurrentMediaTime()
         if !inspecting && ((dirty && now - lastInspect > 0.03) || now - lastInspect > 0.4) {
@@ -1205,6 +1228,11 @@ final class Session {
         if f == "picture", info.family == .code || info.family == .terminal {
             return .text("A shareable picture of this code, in color", meta: "Picture")
         }
+        if f == "receipt", info.family == .text || info.family == .list {
+            return .text(info.family == .list ? "Every item rung up on a till receipt, prices made up" : "Printed out as a till receipt", meta: "Receipt")
+        }
+        if mode == .image, f == "sticker" { return .text("The subject cut out with a white border, like a sticker", meta: "Sticker") }
+        if mode == .image, f == "polaroid" { return .text("An instant photo, with where and when written underneath", meta: "Polaroid") }
         if mode == .text, let v = s.smart, !["plain", "code", "markdown", "reference", "permalink"].contains(f),
            let out = SmartTypes.render(v, as: f) {
             let meta = "\(v.kind.title) · \(opt.title)"
@@ -1325,6 +1353,10 @@ final class Session {
 
     func copy(append: Bool = false) {
         guard armed || debugHold else { return }
+        if let peek = model.peek, peek.isOut(), peek.hitRect.contains(lastPoint), !Buddy.shared.isAway {
+            petMascot()
+            return
+        }
         guard let s = current else {
             pendingCopy = true
             return
@@ -1449,6 +1481,16 @@ final class Session {
         if let custom = Formats.customFormat(f) {
             return await renderCustom(custom, p, scope: s)
         }
+        if f == "receipt", info.family == .text || info.family == .list, case .text(let t) = p {
+            let isList = info.family == .list
+            let lines = isList
+                ? t.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                : FunFormats.wrap(t, width: 32)
+            guard !lines.isEmpty, let r = FunFormats.receipt(lines: lines, isList: isList, store: storeName, cashier: cashierName) else {
+                return failed("Couldn't print the receipt")
+            }
+            return .success(.image(r.image, pointSize: r.pointSize))
+        }
         if f == "picture", info.family == .code || info.family == .terminal, case .text(let code) = p {
             let lang = s.code?.isTerminal == true ? "console" : (s.code?.language ?? "")
             let title = s.code?.fileURL?.lastPathComponent ?? (s.code?.isTerminal == true ? "Terminal" : nil)
@@ -1502,6 +1544,17 @@ final class Session {
                 }
                 let k = img.width > 0 ? size.width / CGFloat(img.width) : 1
                 return .success(.image(cut, pointSize: CGSize(width: CGFloat(cut.width) * k, height: CGFloat(cut.height) * k)))
+            case "sticker":
+                guard let cut = await VisionService.shared.subject(of: img) else { return failed("No subject to make a sticker of") }
+                let scale = img.width > 0 && size.width > 0 ? CGFloat(img.width) / size.width : 2
+                guard let sticker = await Task.detached(priority: .userInitiated, operation: { FunFormats.sticker(cut, scale: scale) }).value else {
+                    return failed("Couldn't make the sticker")
+                }
+                return .success(.image(sticker, pointSize: CGSize(width: CGFloat(sticker.width) / scale, height: CGFloat(sticker.height) / scale)))
+            case "polaroid":
+                let caption = storeName + " · " + Date().formatted(.dateTime.month(.abbreviated).day())
+                guard let photo = FunFormats.polaroid(img, pointSize: size, caption: caption) else { return failed("Couldn't make the photo") }
+                return .success(.image(photo.image, pointSize: photo.pointSize))
             case "palette":
                 let colors = await Task.detached(priority: .userInitiated, operation: { ImageTools.palette(of: img) }).value
                 guard !colors.isEmpty else { return failed("No colors found") }
@@ -1541,6 +1594,18 @@ final class Session {
             }
         }
         return .success(applyFormat(p, scope: s, mode: m))
+    }
+
+    /// Where a grab came from, short: "youtube.com", or the app's name.
+    private var storeName: String {
+        if let host = inspection?.sourceURL?.host { return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host }
+        return inspection?.appName ?? "Grab"
+    }
+
+    /// Who rings up a receipt: the mascot, if there is one.
+    private var cashierName: String {
+        let kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
+        return kind == .off || kind == .classic ? "Grab" : kind.title
     }
 
     /// Values for `{tokens}` in your own formats.
@@ -1681,7 +1746,9 @@ final class Session {
     }
 
     private func celebrate(_ payload: Payload, scope s: Scope, mode m: GrabMode, at point: CGPoint, appended: Bool = false, secret: Bool = false) {
-        Sound.shared.play(.copy)
+        // Grabs in quick succession make a combo: each one rings a step higher.
+        let combo = Settings.shared.combos ? Buddy.shared.grabbed() : { Buddy.shared.grabbed(); return 1 }()
+        Sound.shared.play(.copy, pitch: Self.comboPitch(combo))
         Haptics.perform(.levelChange)
 
         var title = "Copied"
@@ -1732,11 +1799,17 @@ final class Session {
             title = "Added to shelf"
             detail = "\(appendCount) grabs · " + detail
         }
+        if let opt = formatInfo(s, m).selected, ["sticker", "polaroid", "receipt"].contains(opt.id) {
+            title = "Copied \(opt.title.lowercased())"
+        }
         if NSWorkspace.shared.isVoiceOverEnabled { announce(title) }
         model.flash += 1
-        showToast(Toast(success: true, title: title, detail: detail, mode: m, color: color, thumb: thumb))
+        showToast(Toast(success: true, title: title, detail: detail, mode: m, color: color, thumb: thumb, combo: combo))
+        if combo >= 5, combo % 5 == 0 { comboBurst(combo, at: point, mode: m) }
 
         let landing = launchMascot(payload: payload, scope: s, mode: m, at: point, color: color, thumb: thumb)
+        // A soft tap on the trackpad as it lands.
+        DispatchQueue.main.asyncAfter(deadline: .now() + landing) { Haptics.perform(.alignment) }
 
         let historyThumb = thumb.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
         var item = History.Item(mode: m, payload: payload, title: secret ? "Secret" : historyTitle, thumbnail: historyThumb, color: color)
@@ -1763,13 +1836,95 @@ final class Session {
                               ocr: s.textIsOCR || (m == .text && s.text == nil), box: s.role == Self.boxRole, appended: appended,
                               format: formatInfo(s, m).selected?.id, pixels: pixels)
         NotificationCenter.default.post(name: .grabDidCopy, object: event)
+        let ready = Journal.shared.takeReadyMonth()
+        Journal.shared.record(event, combo: combo)
+        let badges = Badges.shared.check(event, combo: combo)
+        Journal.shared.noteBadges(badges)
         if let milestone = Stats.shared.takeMilestone() {
+            followUp(Toast(success: true, title: "\(milestone.formatted()) grabs!",
+                           detail: Stats.savedPhrase(Stats.shared.seconds).capitalizedFirst + " so far", mode: .text), sound: .boing)
+        }
+        announce(badges)
+        if let ready {
+            followUp(Toast(success: true, title: "Your \(Journal.title(ready)) Wrapped is ready",
+                           detail: "Open it from Grab's menu: ⋯ → Grab Wrapped", mode: .image), sound: .fanfare)
+        }
+    }
+
+    /// The copy sound climbs a major scale as a combo grows.
+    nonisolated static func comboPitch(_ combo: Int) -> Int {
+        let steps = [0, 2, 4, 5, 7, 9, 11, 12]
+        return steps[min(max(combo, 1), steps.count) - 1]
+    }
+
+    private func comboBurst(_ combo: Int, at point: CGPoint, mode m: GrabMode) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let b = Burst(at: point, combo: combo, colors: Theme.colors(for: m))
+        overlay.show()
+        model.burst = b
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { Sound.shared.play(.fanfare) }
+        Haptics.perform(.levelChange)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
+            if self?.model.burst?.id == b.id { self?.model.burst = nil }
+        }
+    }
+
+    /// Toasts that follow a grab's own (a milestone, a badge…), one after another.
+    private var followUpAt = Date.distantPast
+
+    private func followUp(_ toast: Toast, sound: Sound.Effect) {
+        let at = max(Date().addingTimeInterval(1.6), followUpAt)
+        followUpAt = at.addingTimeInterval(1.9)
+        DispatchQueue.main.asyncAfter(deadline: .now() + at.timeIntervalSinceNow) { [weak self] in
+            Sound.shared.play(sound)
+            self?.showToast(toast)
+        }
+    }
+
+    private func announce(_ badges: [Badge]) {
+        for b in badges {
+            followUp(Toast(success: true, title: "Badge unlocked · \(b.title)", detail: b.detail, mode: .text, badge: b), sound: .chime)
+        }
+    }
+
+    /// C while pointing at the peeking mascot: a giggle, until it's had enough.
+    private func petMascot() {
+        let reaction = Buddy.shared.pet()
+        model.pet = PetEvent(reaction: reaction)
+        model.peek?.retractAt = Date().addingTimeInterval(2.2)
+        Haptics.perform(.generic)
+        switch reaction {
+        case .giggle(let n):
+            Sound.shared.play(.giggle, pitch: (n - 1) * 2)
+        case .annoyed:
+            Sound.shared.play(.hmph)
+            let id = model.peek?.id
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
-                Sound.shared.play(.boing)
-                self?.showToast(Toast(success: true, title: "\(milestone.formatted()) grabs!",
-                                      detail: Stats.savedPhrase(Stats.shared.seconds).capitalizedFirst + " so far", mode: .text))
+                guard let self, self.model.peek?.id == id else { return }
+                self.model.peek = nil
+                self.model.petHover = false
             }
         }
+        announce(Badges.shared.checkPet(reaction, total: Buddy.shared.petsTotal))
+    }
+
+    /// Into the notch: aimed inside it, so what's carried is pulled up behind the black and gone.
+    nonisolated static func notchLanding(_ notch: CGRect) -> CGPoint {
+        CGPoint(x: notch.midX, y: notch.minY + notch.height * 0.3)
+    }
+
+    /// Where the mascot peeks from: the notch, or the menu bar icon, on the screen in use.
+    private func peekAnchor(near p: CGPoint) -> (point: CGPoint, notch: CGRect?)? {
+        guard let screen = NSScreen.screens.first(where: { ScreenSpace.toAX($0.frame).contains(p) }) else { return nil }
+        let frame = ScreenSpace.toAX(screen.frame)
+        let rim = ScreenSpace.toAX(screen.visibleFrame).minY
+        if Settings.shared.notchCatch, let n = Notch.rect(on: screen) {
+            return (CGPoint(x: n.midX, y: max(rim, n.maxY)), n)
+        }
+        if let item = statusItemFrame?(), item.midX > frame.minX, item.midX < frame.maxX {
+            return (CGPoint(x: item.midX, y: rim), nil)
+        }
+        return nil
     }
 
     // MARK: Mascot
@@ -1777,7 +1932,9 @@ final class Session {
     /// Sends the grab to the menu bar with the chosen mascot. Returns when it lands.
     @discardableResult
     private func launchMascot(payload: Payload, scope s: Scope, mode m: GrabMode, at point: CGPoint, color: RGBAColor?, thumb: CGImage?) -> TimeInterval {
-        let kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
+        var kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
+        // Walked off in a huff: the plain chip covers for it.
+        if kind != .off, Buddy.shared.isAway { kind = .classic }
         guard kind != .off, let item = statusItemFrame?() else { return 0.3 }
         let colors = Theme.colors(for: m, sample: color)
         let content: Cargo.Content
@@ -1793,8 +1950,11 @@ final class Session {
         }
         let from = m == .color ? point : s.frame.center
         let target = m == .color ? CGRect(x: point.x - 18, y: point.y - 18, width: 36, height: 36) : s.frame
-        var trip = Fly(from: from, to: item.center, mode: m, color: color, target: target, kind: kind,
-                       cargo: Cargo(content: content, colors: colors))
+        let notch = Settings.shared.notchCatch ? Notch.rect(near: from) : nil
+        var trip = Fly(from: from, to: notch.map(Self.notchLanding) ?? item.center, mode: m, color: color,
+                       target: target, kind: kind, cargo: Cargo(content: content, colors: colors))
+        trip.notch = notch
+        trip.pumped = Buddy.shared.mood() == .pumped
         switch payload {
         case .image(let img, _): trip.heavy = img.width * img.height > 3_000_000
         case .text(let t), .code(let t): trip.heavy = t.count > 2_000
@@ -1824,9 +1984,12 @@ final class Session {
     func previewMascot(at point: CGPoint) {
         let kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
         guard kind != .off, let item = statusItemFrame?() else { return }
-        let landing = fly(Fly(from: point, to: item.center, mode: .text, color: nil,
-                              target: CGRect(x: point.x - 60, y: point.y - 24, width: 120, height: 48), kind: kind,
-                              cargo: Cargo(content: .text("Hello from Grab"), colors: Theme.brand)))
+        let notch = Settings.shared.notchCatch ? Notch.rect(near: point) : nil
+        var trip = Fly(from: point, to: notch.map(Self.notchLanding) ?? item.center, mode: .text, color: nil,
+                       target: CGRect(x: point.x - 60, y: point.y - 24, width: 120, height: 48), kind: kind,
+                       cargo: Cargo(content: .text("Hello from Grab"), colors: Theme.brand))
+        trip.notch = notch
+        let landing = fly(trip)
         Sound.shared.play(.copy)
         onCopied?(landing)
     }
@@ -1835,7 +1998,7 @@ final class Session {
         Sound.shared.play(.error)
         Haptics.perform(.generic)
         let kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
-        if kind != .off, kind != .classic, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if kind != .off, kind != .classic, !Buddy.shared.isAway, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let oops = Oops(at: lastPoint, kind: kind)
             model.oops = oops
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.25) { [weak self] in

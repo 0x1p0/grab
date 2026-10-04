@@ -88,6 +88,7 @@ enum Formats {
             if s.hasFields { out.append(.init(id: "fields", title: "Fields")) }
             if s.kind.isTextRange && !s.textIsOCR { out.append(.init(id: "font", title: "Font")) }
             if s.inWeb && s.element != nil && !s.kind.isTextRange { out.append(.init(id: "selector", title: "Selector")) }
+            out.append(.init(id: "receipt", title: "Receipt"))
             return out
         case .wifi:
             return [.init(id: "password", title: "Password"), .init(id: "network", title: "Network"), .init(id: "raw", title: "Raw")]
@@ -113,10 +114,10 @@ enum Formats {
             return [.init(id: "tsv", title: "Cells"), .init(id: "markdown", title: "Markdown"), .init(id: "csv", title: "CSV"), .init(id: "json", title: "JSON")]
         case .list:
             return [.init(id: "lines", title: "Lines"), .init(id: "bullets", title: "Bullets"), .init(id: "numbered", title: "Numbered"),
-                    .init(id: "comma", title: "Comma"), .init(id: "json", title: "JSON")]
+                    .init(id: "comma", title: "Comma"), .init(id: "json", title: "JSON"), .init(id: "receipt", title: "Receipt")]
         case .image:
-            return [.init(id: "image", title: "Image"), .init(id: "subject", title: "Subject"), .init(id: "palette", title: "Palette"),
-                    .init(id: "datauri", title: "Data URI")]
+            return [.init(id: "image", title: "Image"), .init(id: "subject", title: "Subject"), .init(id: "sticker", title: "Sticker"),
+                    .init(id: "polaroid", title: "Polaroid"), .init(id: "palette", title: "Palette"), .init(id: "datauri", title: "Data URI")]
         default:
             return []
         }

@@ -119,6 +119,14 @@ final class Settings {
     var mascot: String { didSet { save("mascot", mascot) } }
     /// Mascots dress up for Halloween and the holidays.
     var seasonal: Bool { didSet { save("seasonal", seasonal) } }
+    /// On Macs with a notch, grabs are carried into it instead of to the menu bar icon.
+    var notchCatch: Bool { didSet { save("notchCatch", notchCatch) } }
+    /// The mascot peeks out from under the menu bar while ⌥ is held.
+    var mascotPeek: Bool { didSet { save("mascotPeek", mascotPeek) } }
+    /// Sunglasses at 100 grabs, a crown at 1,000.
+    var wearOutfits: Bool { didSet { save("wearOutfits", wearOutfits) } }
+    /// Quick grabs in a row make a combo: rising sounds, a burst every fifth.
+    var combos: Bool { didSet { save("combos", combos) } }
     /// Your own ⇥ formats: templates and Shortcuts.
     var customFormats: [CustomFormat] {
         didSet { save("customFormats", (try? JSONEncoder().encode(customFormats)) ?? Data()) }
@@ -156,6 +164,10 @@ final class Settings {
             "appRules": [String: Int](),
             "mascot": "snap",
             "seasonal": true,
+            "notchCatch": true,
+            "mascotPeek": true,
+            "wearOutfits": true,
+            "combos": true,
             "checkForUpdates": true,
             "skippedVersion": "",
             "grabCount": 0,
@@ -186,6 +198,10 @@ final class Settings {
         appRules = d.dictionary(forKey: "appRules") as? [String: Int] ?? [:]
         mascot = d.string(forKey: "mascot") ?? "snap"
         seasonal = d.bool(forKey: "seasonal")
+        notchCatch = d.bool(forKey: "notchCatch")
+        mascotPeek = d.bool(forKey: "mascotPeek")
+        wearOutfits = d.bool(forKey: "wearOutfits")
+        combos = d.bool(forKey: "combos")
         customFormats = d.data(forKey: "customFormats").flatMap { try? JSONDecoder().decode([CustomFormat].self, from: $0) } ?? []
         checkForUpdates = d.bool(forKey: "checkForUpdates")
         skippedVersion = d.string(forKey: "skippedVersion") ?? ""

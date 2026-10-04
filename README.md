@@ -168,9 +168,9 @@ Native editors and Safari report exact character positions. VS Code-style editor
 | **Tracking numbers, flights, ISBNs, DOIs** | The clean number · the right tracking or lookup page |
 | **JSON · JWT · base64 · timestamps · sums** | Pretty / minified (key order kept) · decoded payload · readable date · `1,240 × 12%` → `148.8` |
 | **Stack traces & errors** | The error line · a search link · the trace with library frames folded away |
-| **Text** | One line · quote · **cite** (with page title and URL) · font name, size and color (CSS in browsers) · CSS selector |
+| **Text** | One line · quote · **cite** (with page title and URL) · font name, size and color (CSS in browsers) · CSS selector · **receipt** (printed on a till roll; lists get rung up with made-up prices) |
 | **Links** | URL · Markdown · title · YouTube **at the current time** (`youtu.be/…?t=93`) |
-| **Images** | Image (softly rounded corners, and pictures of text framed with even room all around; switch off in Settings) · **subject only** · color palette · data URI |
+| **Images** | Image (softly rounded corners, and pictures of text framed with even room all around; switch off in Settings) · **subject only** · **sticker** (the subject, die-cut with a white border) · **Polaroid** (instant-film colors, captioned with where and when) · color palette · data URI |
 | **Files** | File · path · name · app icon at 1024 px |
 | **Code** | Code · Markdown · `path:line` · permalink · **Picture** |
 | **Anything** | Your own templates (`{text}`, `{url}`, `{title}`, `{app}`, `{date}`… with filters like `\|upper` and `\|slug`) and Shortcuts |
@@ -191,12 +191,23 @@ Every grab gets carried up to the menu bar, by a mascot of your choice (Settings
 
 Each has its own little sounds, the menu bar icon lights up the moment the grab lands, and Reduce Motion turns them off. They strain under a big image or a long text, pop up by the pointer with a "?" when a grab doesn't work out, and dress up for Halloween and the winter holidays (Settings → Seasonal outfits).
 
+**They live here too:**
+
+- **In the notch.** On MacBooks with a notch, the notch opens up, the mascot pops out of it, and your grab disappears inside.
+- **Peeking.** Hold <kbd>⌥</kbd> and your mascot peeks out from under the menu bar for a few seconds, eyes on the pointer. Point at it and press <kbd>C</kbd> to pet it. Five pokes in a minute and it storms off for a while.
+- **Moods.** It dozes off when you haven't grabbed in a while (and wakes with a start), flips for joy after 20 grabs in a day, and wears a nightcap after midnight.
+- **Outfits.** Sunglasses at 100 grabs, a crown at 1,000.
+- **Combos.** Grabs a few seconds apart ring a step higher each time; every fifth gets a burst of confetti. A soft tap on the trackpad as each one lands.
+- **Badges.** Fourteen to earn, from Night Owl to Combo King, in Settings.
+- **Grab Wrapped.** A card for each month: your top app, streaks, best combo, peak hour, and a poster of every color you picked. ⋯ → Grab Wrapped.
+
 ## Privacy
 
 - **Secrets stay secret.** API keys, tokens, private keys and Wi-Fi passwords are marked concealed (clipboard managers skip them), kept out of history, and cleared from the clipboard after a minute.
 - **Password fields are never read.** In native apps and in browsers.
 - **Nothing is kept on disk** unless you ask. History and the shelf live in memory; files made for dragging or Quick Look are temporary. *Keep history after quitting* (off by default) saves history encrypted with AES-GCM, with the key in your keychain, readable only by you, and never with secrets in it.
 - **On-device.** OCR, barcode detection, translation and AI (Apple Intelligence) run on your Mac. See below for the only times Grab goes online.
+- **Stats are counts.** Stats, badges and Grab Wrapped keep numbers, which apps you grab in and the colors you pick, on this Mac. Never what you grab.
 - **Never in your captures.** The overlay is hidden from screenshots and screen recordings by default.
 
 ### Permissions, explained

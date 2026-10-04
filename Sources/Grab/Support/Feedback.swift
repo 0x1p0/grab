@@ -10,20 +10,28 @@ final class Sound {
         case copy, tick, scope, bump, error
         // Mascots
         case boing, zip, plop, clank, beam, gulp
+        // Fun
+        case fanfare, giggle, hmph, chime
     }
 
-    private var pools: [Effect: [AVAudioPlayer]] = [:]
-    private var cursor: [Effect: Int] = [:]
+    private struct Voice: Hashable {
+        var effect: Effect
+        var pitch: Int
+    }
+
+    private var pools: [Voice: [AVAudioPlayer]] = [:]
+    private var cursor: [Voice: Int] = [:]
 
     /// Only the copy sound is made up front; the rest are synthesized the first
     /// time they play, so unused sounds cost no memory.
     func prepare() {
-        _ = pool(for: .copy)
+        _ = pool(for: Voice(effect: .copy, pitch: 0))
     }
 
-    private func pool(for effect: Effect) -> [AVAudioPlayer] {
-        if let p = pools[effect] { return p }
-        let data = Synth.wav(Synth.render(effect))
+    private func pool(for v: Voice) -> [AVAudioPlayer] {
+        if let p = pools[v] { return p }
+        let effect = v.effect
+        let data = Synth.wav(Synth.transpose(Synth.render(effect), semitones: v.pitch))
         // Two voices for sounds that can overlap quickly, one for the rest.
         let voices = [.copy, .tick, .scope, .zip].contains(effect) ? 2 : 1
         let made = (0..<voices).compactMap { _ -> AVAudioPlayer? in
@@ -31,17 +39,19 @@ final class Sound {
             p?.prepareToPlay()
             return p
         }
-        pools[effect] = made
+        pools[v] = made
         return made
     }
 
-    func play(_ effect: Effect) {
+    /// `pitch` in semitones: combos climb a step with every grab.
+    func play(_ effect: Effect, pitch: Int = 0) {
         let s = Settings.shared
         guard s.soundEnabled else { return }
-        let pool = pool(for: effect)
+        let v = Voice(effect: effect, pitch: max(-12, min(24, pitch)))
+        let pool = pool(for: v)
         guard !pool.isEmpty else { return }
-        let i = (cursor[effect] ?? 0) % pool.count
-        cursor[effect] = i + 1
+        let i = (cursor[v] ?? 0) % pool.count
+        cursor[v] = i + 1
         let p = pool[i]
         p.volume = Float(s.soundVolume) * Self.gain(effect)
         p.currentTime = 0
@@ -56,6 +66,8 @@ final class Sound {
         case .bump: 0.5
         case .error: 0.7
         case .boing, .zip, .plop, .clank, .beam, .gulp: 0.42
+        case .fanfare, .chime: 0.6
+        case .giggle, .hmph: 0.5
         }
     }
 }
@@ -138,12 +150,53 @@ enum Synth {
                 Note(freq: 880, start: 0, amp: 0.22, decay: 0.16, attack: 0.02, harmonics: [(1.012, 0.9), (2, 0.15)], glide: 0.5, glideTime: 0.3),
                 Note(freq: 1320, start: 0.05, amp: 0.1, decay: 0.12, attack: 0.02, harmonics: [(1.01, 0.8)], glide: 0.4, glideTime: 0.25),
             ], click: 0.0, peak: 0.3)
+        case .fanfare:
+            // A quick, bright arpeggio up to the octave: C6 E6 G6 C7.
+            return mix(duration: 0.62, notes: [
+                Note(freq: 1046.5, start: 0, amp: 0.32, decay: 0.07),
+                Note(freq: 1318.51, start: 0.06, amp: 0.32, decay: 0.07),
+                Note(freq: 1567.98, start: 0.12, amp: 0.34, decay: 0.08),
+                Note(freq: 2093.0, start: 0.18, amp: 0.4, decay: 0.2),
+                Note(freq: 3135.96, start: 0.18, amp: 0.06, decay: 0.12, harmonics: []),
+            ], click: 0.08, peak: 0.55)
+        case .giggle:
+            // "Hehehe": three bouncy little notes.
+            return mix(duration: 0.34, notes: [
+                Note(freq: 990, start: 0, amp: 0.3, decay: 0.03, attack: 0.002, harmonics: [(2, 0.2)], glide: 0.25, glideTime: 0.03),
+                Note(freq: 1110, start: 0.085, amp: 0.3, decay: 0.03, attack: 0.002, harmonics: [(2, 0.2)], glide: 0.25, glideTime: 0.03),
+                Note(freq: 1240, start: 0.17, amp: 0.32, decay: 0.045, attack: 0.002, harmonics: [(2, 0.2)], glide: 0.3, glideTime: 0.04),
+            ], click: 0.0, peak: 0.36)
+        case .hmph:
+            // A low, grumpy huff.
+            return mix(duration: 0.3, notes: [
+                Note(freq: 240, start: 0, amp: 0.4, decay: 0.09, attack: 0.006, harmonics: [(2, 0.35), (3, 0.18)], glide: -0.35, glideTime: 0.18),
+                Note(freq: 180, start: 0.05, amp: 0.2, decay: 0.08, attack: 0.006, harmonics: [(2, 0.3)], glide: -0.25, glideTime: 0.15),
+            ], click: 0.03, peak: 0.4)
+        case .chime:
+            // A bell for a new badge.
+            return mix(duration: 0.9, notes: [
+                Note(freq: 1567.98, start: 0, amp: 0.36, decay: 0.3, harmonics: [(2.76, 0.18), (5.4, 0.06)]),
+                Note(freq: 2349.32, start: 0.09, amp: 0.3, decay: 0.38, harmonics: [(2.76, 0.14)]),
+            ], click: 0.05, peak: 0.5)
         case .gulp:
             // Down the hatch.
             return mix(duration: 0.22, notes: [
                 Note(freq: 260, start: 0, amp: 0.4, decay: 0.05, attack: 0.003, harmonics: [(2, 0.3)], glide: -0.35, glideTime: 0.08),
                 Note(freq: 190, start: 0.07, amp: 0.38, decay: 0.06, attack: 0.003, harmonics: [(2, 0.3)], glide: -0.3, glideTime: 0.08),
             ], click: 0.0, peak: 0.38)
+        }
+    }
+
+    /// Higher (or lower) by playing faster (or slower), like a sped-up tape.
+    static func transpose(_ samples: [Float], semitones: Int) -> [Float] {
+        guard semitones != 0, !samples.isEmpty else { return samples }
+        let k = pow(2, Double(semitones) / 12)
+        let n = Int(Double(samples.count) / k)
+        return (0..<n).map { i in
+            let x = Double(i) * k
+            let a = Int(x), f = Float(x - Double(a))
+            let s0 = samples[min(a, samples.count - 1)], s1 = samples[min(a + 1, samples.count - 1)]
+            return s0 + (s1 - s0) * f
         }
     }
 

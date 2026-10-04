@@ -422,3 +422,171 @@ final class MenuPanelTests: XCTestCase {
         XCTAssertEqual(panel.frame.maxY, full.maxY, accuracy: 0.5)
     }
 }
+
+/// A throwaway defaults suite, removed after each test.
+private final class TestDefaults {
+    let name = "grab.tests.\(UUID().uuidString)"
+    lazy var d = UserDefaults(suiteName: name)!
+    deinit { UserDefaults().removePersistentDomain(forName: name) }
+}
+
+final class BuddyTests: XCTestCase {
+    func testCombosNeedQuickGrabs() {
+        let t = TestDefaults()
+        let b = Buddy(defaults: t.d)
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertEqual(b.grabbed(at: start), 1)
+        XCTAssertEqual(b.grabbed(at: start.addingTimeInterval(2)), 2)
+        XCTAssertEqual(b.grabbed(at: start.addingTimeInterval(6)), 3)
+        XCTAssertEqual(b.grabbed(at: start.addingTimeInterval(20)), 1, "too slow: the combo starts over")
+    }
+
+    func testPokingTooMuchSendsItAway() {
+        let t = TestDefaults()
+        let b = Buddy(defaults: t.d)
+        let now = Date()
+        for i in 1...4 { XCTAssertEqual(b.pet(at: now.addingTimeInterval(Double(i))), .giggle(i)) }
+        XCTAssertEqual(b.pet(at: now.addingTimeInterval(5)), .annoyed)
+        XCTAssertEqual(b.mood(at: now.addingTimeInterval(30)), .away)
+        XCTAssertNotEqual(b.mood(at: now.addingTimeInterval(70)), .away, "back after a minute")
+        XCTAssertEqual(b.petsTotal, 5)
+    }
+
+    func testMoods() {
+        let t = TestDefaults()
+        let b = Buddy(defaults: t.d)
+        let now = Date()
+        b.grabbed(at: now)
+        XCTAssertEqual(b.mood(at: now.addingTimeInterval(60)), .normal)
+        XCTAssertEqual(b.mood(at: now.addingTimeInterval(Buddy.sleepAfter + 1)), .sleepy)
+        XCTAssertTrue(b.wake(at: now.addingTimeInterval(Buddy.sleepAfter + 2)), "holding ⌥ wakes it")
+        XCTAssertNotEqual(b.mood(at: now.addingTimeInterval(Buddy.sleepAfter + 3)), .sleepy)
+        let day = Calendar.current.startOfDay(for: now).addingTimeInterval(13 * 3600)
+        for i in 0..<Buddy.pumpedAt { b.grabbed(at: day.addingTimeInterval(Double(i) * 30)) }
+        XCTAssertEqual(b.mood(at: day.addingTimeInterval(Double(Buddy.pumpedAt) * 30)), .pumped)
+    }
+
+    func testOutfits() {
+        let t = TestDefaults()
+        let b = Buddy(defaults: t.d)
+        let noon = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 3600)
+        let night = Calendar.current.startOfDay(for: Date()).addingTimeInterval(2 * 3600)
+        XCTAssertEqual(b.outfit(at: noon, total: 99, wear: true), Buddy.Outfit())
+        XCTAssertEqual(b.outfit(at: noon, total: 100, wear: true), Buddy.Outfit(shades: true))
+        XCTAssertEqual(b.outfit(at: noon, total: 1_000, wear: true), Buddy.Outfit(shades: true, crown: true))
+        XCTAssertEqual(b.outfit(at: night, total: 1_000, wear: true), Buddy.Outfit(crown: true, nightcap: true), "no sunglasses at night")
+        XCTAssertEqual(b.outfit(at: noon, total: 5_000, wear: false), Buddy.Outfit())
+    }
+
+    func testComboClimbsAScale() {
+        XCTAssertEqual((1...9).map(Session.comboPitch), [0, 2, 4, 5, 7, 9, 11, 12, 12])
+    }
+}
+
+final class BadgeTests: XCTestCase {
+    private func event(_ mode: GrabMode = .text, text: String? = "hello") -> GrabEvent {
+        GrabEvent(mode: mode, text: text, color: nil, bundleID: "com.apple.Safari", codeKind: nil, ocr: false, box: false,
+                  appended: false, format: nil, pixels: 0)
+    }
+
+    func testTimeAndComboBadges() {
+        let t = TestDefaults()
+        let b = Badges(defaults: t.d)
+        let three = Calendar.current.startOfDay(for: Date()).addingTimeInterval(3 * 3600)
+        XCTAssertTrue(b.check(event(), combo: 1, at: three).contains(.nightOwl))
+        XCTAssertFalse(b.check(event(), combo: 1, at: three).contains(.nightOwl), "once")
+        XCTAssertTrue(b.check(event(), combo: 10, at: three.addingTimeInterval(60)).contains(.comboKing))
+        XCTAssertEqual(b.progress(.comboKing)?.0, 10)
+        XCTAssertTrue(Badges(defaults: t.d).has(.nightOwl), "kept")
+    }
+
+    func testStreakAndLanguages() {
+        let t = TestDefaults()
+        let b = Badges(defaults: t.d)
+        let noon = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 3600)
+        var got: [Badge] = []
+        for day in 0..<7 { got += b.check(event(), combo: 1, at: noon.addingTimeInterval(Double(day) * 86_400)) }
+        XCTAssertTrue(got.contains(.onARoll))
+        XCTAssertEqual(Badges.language(of: "The quick brown fox jumps over the lazy dog near the river bank."), "en")
+        XCTAssertEqual(Badges.language(of: "Le renard brun rapide saute par-dessus le chien paresseux près de la rivière."), "fr")
+        XCTAssertNil(Badges.language(of: "ok"), "too short to tell")
+    }
+
+    func testPets() {
+        let t = TestDefaults()
+        let b = Badges(defaults: t.d)
+        XCTAssertEqual(b.checkPet(.annoyed, total: 5), [.testingPatience])
+        XCTAssertEqual(b.checkPet(.giggle(1), total: 25), [.bestFriends])
+    }
+}
+
+final class JournalTests: XCTestCase {
+    func testAMonthOfGrabs() {
+        let t = TestDefaults()
+        let j = Journal(defaults: t.d)
+        let cal = Calendar.current
+        let first = cal.date(from: DateComponents(year: 2026, month: 9, day: 3, hour: 15))!
+        for day in [0, 1, 2, 5] {
+            let e = GrabEvent(mode: .text, text: String(repeating: "a", count: 300 + day), color: nil, bundleID: "com.apple.Notes",
+                              codeKind: nil, ocr: false, box: false, appended: false, format: nil, pixels: 0)
+            j.record(e, combo: day + 1, at: first.addingTimeInterval(Double(day) * 86_400))
+        }
+        let pick = GrabEvent(mode: .color, text: "#ED6E2A", color: RGBAColor(hex: "#ED6E2A"), bundleID: "com.apple.Safari",
+                             codeKind: nil, ocr: false, box: false, appended: false, format: nil, pixels: 0)
+        j.record(pick, combo: 1, at: first)
+        let log = try! XCTUnwrap(Journal(defaults: t.d).months["2026-09"])
+        XCTAssertEqual(log.total, 5)
+        XCTAssertEqual(log.topApp?.bundleID, "com.apple.Notes")
+        XCTAssertEqual(log.longestStreak, 3)
+        XCTAssertEqual(log.bestCombo, 6)
+        XCTAssertEqual(log.biggestText, 305)
+        XCTAssertEqual(log.colors, ["#ED6E2A"])
+        XCTAssertEqual(log.busiestHour, 15)
+        XCTAssertEqual(log.topKind, .text)
+        // October: September's card is announced once.
+        let october = cal.date(from: DateComponents(year: 2026, month: 10, day: 1, hour: 9))!
+        XCTAssertNil(j.takeReadyMonth(at: october), "fewer than 10 grabs isn't worth a card")
+        for i in 0..<5 { j.record(pick, combo: 1, at: first.addingTimeInterval(Double(i) * 60)) }
+        XCTAssertEqual(j.takeReadyMonth(at: october), "2026-09")
+        XCTAssertNil(j.takeReadyMonth(at: october))
+    }
+}
+
+final class FunFormatTests: XCTestCase {
+    func testReceiptWrapping() {
+        let lines = FunFormats.wrap("Everyone's waiting on Gemini 4 Argon, Fable 5.5, or whatever ships next week.\n\nA supercalifragilisticexpialidocious-ish word", width: 32)
+        XCTAssertTrue(lines.allSatisfy { $0.count <= 32 })
+        XCTAssertEqual(lines.first, "Everyone's waiting on Gemini 4")
+        XCTAssertTrue(lines.contains(""), "paragraphs keep their gap")
+        XCTAssertEqual(FunFormats.price("Oat milk"), FunFormats.price("Oat milk"), "same item, same price")
+        XCTAssertTrue((99...1499).contains(FunFormats.price("Bananas")))
+    }
+
+    func testStickerHasAWhiteBorder() throws {
+        // A blue disc on transparent: the sticker is bigger, white just outside the disc, clear in the corners.
+        let side = 120
+        let ctx = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(srgbRed: 0.1, green: 0.4, blue: 0.9, alpha: 1))
+        ctx.fillEllipse(in: CGRect(x: 0, y: 0, width: side, height: side))
+        let sticker = try XCTUnwrap(FunFormats.sticker(ctx.makeImage()!, scale: 2))
+        XCTAssertGreaterThan(sticker.width, side + 20)
+        let px = try XCTUnwrap(ImageTools.Pixels(sticker))
+        let c = sticker.width / 2
+        let edge = px.at(c, c - side / 2 - 6)
+        XCTAssertGreaterThan(edge.3, 240)
+        XCTAssertGreaterThan(min(edge.0, edge.1, edge.2), 240, "white border just outside the subject")
+        XCTAssertLessThan(px.at(2, 2).3, 20)
+    }
+
+    @MainActor
+    func testReceiptAndPhotoRender() throws {
+        _ = NSApplication.shared
+        let r = try XCTUnwrap(FunFormats.receipt(lines: ["Milk", "Bread"], isList: true, store: "shop.example", cashier: "Snap"))
+        XCTAssertGreaterThan(r.pointSize.height, r.pointSize.width)
+        let img = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        let p = try XCTUnwrap(FunFormats.polaroid(img, pointSize: CGSize(width: 200, height: 150), caption: "shop.example · Oct 4"))
+        XCTAssertGreaterThan(p.pointSize.height, 150 + 40, "the wide bottom edge")
+    }
+}

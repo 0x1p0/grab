@@ -34,6 +34,7 @@ struct SettingsView: View {
                 }
                 .padding(.vertical, 4)
                 StatsRow()
+                BadgesRow()
             }
 
             Section {
@@ -89,6 +90,26 @@ struct SettingsView: View {
                     Text("Gently dims everything except what you're about to grab.")
                 }
                 MascotPicker(selection: $settings.mascot)
+                if settings.mascot != MascotKind.off.rawValue && settings.mascot != MascotKind.classic.rawValue {
+                    Toggle(isOn: $settings.mascotPeek) {
+                        Text("Peek while you hold \(settings.trigger.symbol)")
+                        Text("It watches from under the menu bar, dozes off if you've been away, and wakes with a start. Point at it and press C to pet it (not too much).")
+                    }
+                    if NSScreen.screens.contains(where: { Notch.rect(on: $0) != nil }) {
+                        Toggle(isOn: $settings.notchCatch) {
+                            Text("Catch grabs in the notch")
+                            Text("The notch opens up, the mascot pops out, and your grab disappears into it.")
+                        }
+                    }
+                    Toggle(isOn: $settings.wearOutfits) {
+                        Text("Earned outfits")
+                        Text(outfitStatus)
+                    }
+                }
+                Toggle(isOn: $settings.combos) {
+                    Text("Combos")
+                    Text("Grabs a few seconds apart climb in pitch; every fifth gets a burst of confetti.")
+                }
                 Toggle("Keyboard hints in the HUD", isOn: $settings.showHints)
                 Toggle(isOn: $settings.overlayInRecordings) {
                     Text("Show overlay in screen recordings")
@@ -335,6 +356,59 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 540, height: 700)
+    }
+
+    private var outfitStatus: String {
+        let total = Stats.shared.total
+        let shades = total >= Buddy.shadesAt ? "Sunglasses ✓" : "Sunglasses at \(Buddy.shadesAt) grabs (\(Buddy.shadesAt - total) to go)"
+        let crown = total >= Buddy.crownAt ? "crown ✓" : "a crown at \(Buddy.crownAt.formatted()) (\((Buddy.crownAt - total).formatted()) to go)"
+        return "\(shades), \(crown). Plus a nightcap after midnight."
+    }
+}
+
+/// Every badge: earned ones in color, the rest grey with how far along you are.
+private struct BadgesRow: View {
+    @State private var badges = Badges.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Badges").font(.system(size: 12, weight: .semibold))
+                Text("\(badges.earnedCount) of \(Badge.allCases.count)").font(.system(size: 11)).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Panels.shared.showWrapped()
+                } label: {
+                    Label("Grab Wrapped", systemImage: "sparkles.rectangle.stack")
+                }
+                .controlSize(.small)
+                .help("Your month in grabs, as a card to share")
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 10) {
+                ForEach(Badge.allCases) { b in
+                    let earned = badges.has(b)
+                    let progress = badges.progress(b)
+                    VStack(spacing: 4) {
+                        BadgeMedal(badge: b, earned: earned, size: 34)
+                        if !earned, let (now, target) = progress {
+                            ProgressView(value: Double(now), total: Double(target))
+                                .progressViewStyle(.linear)
+                                .frame(width: 30)
+                                .controlSize(.mini)
+                        }
+                    }
+                    .frame(height: 46, alignment: .top)
+                    .help(help(b, earned: earned, progress: progress))
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func help(_ b: Badge, earned: Bool, progress: (Int, Int)?) -> String {
+        if earned, let d = badges.earned[b.rawValue] { return "\(b.title): \(b.detail). Earned \(d.formatted(date: .abbreviated, time: .omitted))." }
+        if let (now, target) = progress { return "\(b.title): \(b.detail). \(now) of \(target)." }
+        return "\(b.title): \(b.detail)."
     }
 }
 
@@ -660,7 +734,7 @@ private struct StatsRow: View {
 
     var body: some View {
         if stats.total == 0 {
-            Text("Your grabs get counted here. Counts only; nothing you grab is kept for this.")
+            Text("Your grabs get counted here, with the apps you grab in and the colors you pick for Grab Wrapped. Never what you grab.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
         } else {

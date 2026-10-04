@@ -597,10 +597,23 @@ struct MascotLayer: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
+            if !reduceMotion, model.visible, let peek = model.peek, geo.frame.contains(CGPoint(x: peek.anchor.x, y: peek.anchor.y + 1)) {
+                TimelineView(.animation) { ctx in
+                    PeekScene(peek: peek, t: ctx.date.timeIntervalSince(peek.start), geo: geo, pet: model.pet, hovering: model.petHover)
+                }
+                .id(peek.id)
+                .transition(.opacity)
+            }
             if !reduceMotion, let fly = model.fly {
                 if fly.kind == .classic {
                     if geo.frame.contains(fly.from) {
                         ClassicChip(fly: fly, from: geo.local(fly.from), to: geo.local(fly.to)).id(fly.id)
+                    }
+                    if let n = fly.notch, geo.frame.contains(n.center) {
+                        TimelineView(.animation) { ctx in
+                            NotchBulge(notch: geo.local(n), amount: sin(.pi * Choreo.ramp(ctx.date.timeIntervalSince(fly.start), 0.5, 0.36)))
+                        }
+                        .id(fly.id)
                     }
                 } else if fly.kind != .off {
                     TimelineView(.animation) { ctx in
@@ -614,6 +627,12 @@ struct MascotLayer: View {
                     OopsScene(oops: oops, t: ctx.date.timeIntervalSince(oops.start), at: geo.local(oops.at))
                 }
                 .id(oops.id)
+            }
+            if !reduceMotion, let burst = model.burst, geo.frame.contains(burst.at) {
+                TimelineView(.animation) { ctx in
+                    BurstScene(burst: burst, t: ctx.date.timeIntervalSince(burst.start), at: geo.local(burst.at))
+                }
+                .id(burst.id)
             }
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
@@ -648,12 +667,13 @@ struct MascotScene: View {
                     .opacity(p.cargoOpacity)
                     .position(x: c.midX, y: c.midY)
             }
-            // The character, wobbling if the cargo is heavy.
+            // The character, wobbling if the cargo is heavy, flipping if it's on a roll.
             let strain = fly.heavy && p.cargoOpacity > 0.6 ? 1.0 : 0
+            let flip = fly.pumped && fly.kind != .clawsy ? 360 * Choreo.easeInOut(Choreo.ramp(t, 0.5, 0.36)) : 0
             character(p)
-                .overlay { SeasonHat.on(fly.kind) }
+                .overlay { MascotWear(kind: fly.kind) }
                 .scaleEffect(x: p.scale * p.stretch.width * fly.kind.size, y: p.scale * p.stretch.height * fly.kind.size)
-                .rotationEffect(.degrees(p.tilt + strain * sin(t * 31) * 6))
+                .rotationEffect(.degrees(p.tilt + strain * sin(t * 31) * 6 + flip))
                 .offset(y: strain * CGFloat(abs(sin(t * 15))) * 2.5)
                 .opacity(p.opacity)
                 .position(body)
@@ -666,6 +686,15 @@ struct MascotScene: View {
                     .rotationEffect(.degrees(p.cargoTilt))
                     .opacity(p.gripOpacity)
                     .position(x: g.midX, y: g.midY)
+            }
+            if fly.pumped {
+                Sparkles(t: t).scaleEffect(p.scale * fly.kind.size * 0.9).opacity(p.opacity).position(body)
+            }
+            // The notch lets it out, then swallows the grab: drawn on top, so things vanish into it.
+            if let n = fly.notch {
+                let out = fly.kind == .snap ? 0 : sin(.pi * Choreo.ramp(t, 0, 0.3))
+                let gulp = sin(.pi * Choreo.ramp(t, fly.kind.dropTime - 0.14, 0.36))
+                NotchBulge(notch: geo.local(n), amount: max(out, gulp))
             }
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
@@ -782,40 +811,57 @@ struct ClassicChip: View {
 
 // MARK: - Settings preview
 
-/// A mascot idling in place, for Settings.
+/// A mascot idling in place (Settings, the menu, cards), in its current mood.
 struct MascotIdle: View {
     var kind: MascotKind
+    var mood: Buddy.Mood = .normal
+    /// Off for pictures: a single still frame.
+    var animated = true
+
     var body: some View {
-        TimelineView(.animation) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            let bob = sin(t * 2.6) * 2.5
-            let blink = (t.truncatingRemainder(dividingBy: 3.2)) < 0.12 ? 1.0 : 0
-            let look = CGVector(dx: sin(t * 0.9) * 0.6, dy: 0.1)
-            let pose = MascotPose(body: .zero, look: look, blink: blink)
-            Group {
-                switch kind {
-                case .snap:
-                    ZStack {
-                        Pincers(rect: CGRect(x: 0, y: 0, width: 50, height: 46)).opacity(0.9)
-                        SnapBody(pose: pose, t: t).scaleEffect(0.95)
-                    }
-                    .frame(width: 50, height: 46)
-                case .clawsy:
-                    ClawHead(open: sin(t * 1.8) * 0.5 + 0.5).overlay { SeasonHat.on(.clawsy) }.scaleEffect(0.8).offset(y: -12)
-                case .beamy:
-                    Saucer(t: t).rotationEffect(.degrees(sin(t * 1.5) * 6))
-                case .ribbit:
-                    FrogBody(pose: MascotPose(body: .zero, look: look, blink: blink, puff: max(0, sin(t * 1.3)) * 0.6))
-                case .classic:
-                    Circle().fill(LinearGradient(colors: Theme.brand, startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 30, height: 30)
-                        .overlay(Image(systemName: "text.quote").font(.system(size: 13, weight: .bold)).foregroundStyle(.white))
-                case .off:
-                    Image(systemName: "moon.zzz.fill").font(.system(size: 24)).foregroundStyle(.secondary)
+        if animated {
+            TimelineView(.animation) { ctx in still(ctx.date.timeIntervalSinceReferenceDate) }
+        } else {
+            still(1.0)
+        }
+    }
+
+    private func still(_ t: Double) -> some View {
+        let sleepy = mood == .sleepy
+        let bob = sleepy ? sin(t * 1.1) * 1.2 : sin(t * (mood == .pumped ? 4.4 : 2.6)) * 2.5
+        let blink = sleepy ? 1.0 : ((t.truncatingRemainder(dividingBy: 3.2)) < 0.12 ? 1.0 : 0)
+        let look = sleepy ? CGVector(dx: 0, dy: 0.4) : CGVector(dx: sin(t * 0.9) * 0.6, dy: 0.1)
+        let pose = MascotPose(body: .zero, look: look, blink: blink)
+        return Group {
+            switch kind {
+            case .snap:
+                ZStack {
+                    Pincers(rect: CGRect(x: 0, y: 0, width: 50, height: 46)).opacity(0.9)
+                    SnapBody(pose: pose, t: t).scaleEffect(0.95)
                 }
+                .frame(width: 50, height: 46)
+            case .clawsy:
+                ClawHead(open: sleepy ? 0.1 : sin(t * 1.8) * 0.5 + 0.5).overlay { MascotWear(kind: .clawsy) }.scaleEffect(0.8).offset(y: -12)
+            case .beamy:
+                Saucer(t: t).rotationEffect(.degrees(sin(t * 1.5) * 6))
+            case .ribbit:
+                FrogBody(pose: MascotPose(body: .zero, look: look, blink: blink, puff: max(0, sin(t * 1.3)) * 0.6))
+            case .classic:
+                Circle().fill(LinearGradient(colors: Theme.brand, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 30, height: 30)
+                    .overlay(Image(systemName: "text.quote").font(.system(size: 13, weight: .bold)).foregroundStyle(.white))
+            case .off:
+                Image(systemName: "moon.zzz.fill").font(.system(size: 24)).foregroundStyle(.secondary)
             }
-            .overlay { if kind != .clawsy { SeasonHat.on(kind) } }
-            .offset(y: kind == .off ? 0 : bob)
+        }
+        .overlay { if kind != .clawsy { MascotWear(kind: kind) } }
+        .rotationEffect(.degrees(sleepy && kind != .off && kind != .classic ? 8 : 0))
+        .offset(y: kind == .off ? 0 : bob)
+        .overlay(alignment: .topTrailing) {
+            if sleepy, kind != .off, kind != .classic { Zzz(t: t).offset(x: 4, y: 6) }
+        }
+        .overlay {
+            if mood == .pumped, kind != .off, kind != .classic { Sparkles(t: t).scaleEffect(0.85) }
         }
     }
 }
@@ -918,7 +964,7 @@ struct SeasonHat: View {
         }
     }
 
-    private static func spot(for kind: MascotKind) -> (offset: CGSize, tilt: Double)? {
+    static func spot(for kind: MascotKind) -> (offset: CGSize, tilt: Double)? {
         switch kind {
         case .snap: (CGSize(width: -5, height: -21), -10)
         case .clawsy: (CGSize(width: 0, height: -18), 0)
