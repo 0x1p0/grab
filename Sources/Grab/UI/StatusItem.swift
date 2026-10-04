@@ -105,6 +105,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
         let y = anchor.minY - 6 - size.height
         p.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        p.top = y + size.height
         p.alphaValue = 0
         p.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { ctx in
@@ -182,15 +183,28 @@ final class MenuPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         let host = NSHostingView(rootView: content.environment(model))
         contentView = host
+        model.panel = self
+    }
+
+    /// Where the top edge belongs: just under the menu bar.
+    var top: CGFloat?
+
+    /// Follows the content's height, keeping the top edge in place.
+    func fit(height: CGFloat) {
+        guard height > 0, let top else { return }
+        let target = NSRect(x: frame.minX, y: top - height, width: frame.width, height: height)
+        if frame != target { setFrame(target, display: true) }
     }
 
     override var canBecomeKey: Bool { true }
 
-    /// Keyboard: ↑ ↓ to move, ⏎ to copy, 1–5 to copy directly, ⌘F history, ⌘, settings, esc closes.
+    /// Keyboard: ↑ ↓ to move, ⏎ to copy, 1–5 to copy directly, ⌘F history, ⌘, settings,
+    /// ⌘⌫ clears the history (⌘Z puts it back), esc closes.
     func handle(_ e: NSEvent) -> Bool {
         let cmd = e.modifierFlags.contains(.command)
         switch (e.keyCode, cmd) {
         case (53, _): model.send(.close)
+        case (51, true): model.send(.clearHistory)
         case (125, false): model.send(.move(1))
         case (126, false): model.send(.move(-1))
         case (36, false), (76, false): model.send(.activate)
@@ -202,6 +216,7 @@ final class MenuPanel: NSPanel {
                 case ",": model.send(.settings)
                 case "p": model.send(.pause)
                 case "q": model.send(.quit)
+                case "z": model.send(.undoClear)
                 default: return false
                 }
             } else if let n = Int(ch), (1...MenuPanelView.recentCount).contains(n) {
@@ -217,8 +232,9 @@ final class MenuPanel: NSPanel {
 /// Keyboard events from the panel to its SwiftUI content.
 @Observable
 final class MenuPanelModel {
-    enum Command: Equatable { case close, move(Int), activate, copyIndex(Int), history, settings, pause, quit }
+    enum Command: Equatable { case close, move(Int), activate, copyIndex(Int), history, settings, pause, quit, clearHistory, undoClear }
     var command: (id: Int, value: Command)?
+    @ObservationIgnored weak var panel: MenuPanel?
     func send(_ c: Command) { command = ((command?.id ?? 0) + 1, c) }
 }
 
@@ -248,6 +264,8 @@ struct MenuPanelView: View {
     @State private var settings = Settings.shared
     @State private var selected: Int?
     @State private var copied: UUID?
+    /// Just-cleared grabs, while Undo is on offer.
+    @State private var cleared: [History.Item]?
 
     private var recent: [History.Item] { Array(history.items.prefix(Self.recentCount)) }
 
@@ -269,6 +287,7 @@ struct MenuPanelView: View {
             guard let c = model.command?.value else { return }
             handle(c)
         }
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { h in model.panel?.fit(height: h) }
     }
 
     // MARK: Header
@@ -290,6 +309,7 @@ struct MenuPanelView: View {
                 HStack(spacing: 6) {
                     Circle().fill(color).frame(width: 6, height: 6)
                     Text(text).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 6)
@@ -356,7 +376,9 @@ struct MenuPanelView: View {
             .padding(.top, 9)
             .padding(.bottom, 4)
 
-            if recent.isEmpty {
+            if let cleared {
+                clearedRow(cleared)
+            } else if recent.isEmpty {
                 HStack(spacing: 10) {
                     MascotIdle(kind: MascotKind(rawValue: settings.mascot) ?? .snap).frame(width: 44, height: 40).scaleEffect(0.75)
                     VStack(alignment: .leading, spacing: 3) {
@@ -374,6 +396,12 @@ struct MenuPanelView: View {
                             if inside { selected = i } else if selected == i { selected = nil }
                         }
                         .onTapGesture { copy(h) }
+                        .contextMenu {
+                            Button("Copy Again") { copy(h) }
+                            Button("Remove from History") { withAnimation(.easeOut(duration: 0.15)) { history.remove(h.id) } }
+                            Divider()
+                            Button("Clear History", role: .destructive) { clearHistory() }
+                        }
                 }
             }
             if !Shelf.shared.items.isEmpty {
@@ -386,6 +414,33 @@ struct MenuPanelView: View {
             }
         }
         .padding(.bottom, 6)
+    }
+
+    /// Shown right after clearing: how many went, and a way back.
+    private func clearedRow(_ items: [History.Item]) -> some View {
+        HStack(spacing: 11) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 32, height: 32)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.06)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("History cleared").font(.system(size: 12.5, weight: .medium))
+                Text(items.count == 1 ? "1 grab removed" : "\(items.count) grabs removed")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button(action: undoClear) {
+                HStack(spacing: 4) {
+                    Text("Undo")
+                    Text("⌘Z").foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(PillButtonStyle())
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .transition(.opacity)
     }
 
     // MARK: Footer
@@ -418,6 +473,11 @@ struct MenuPanelView: View {
                     }
                 }
                 Section {
+                    Button("Clear History", role: .destructive, action: clearHistory)
+                        .keyboardShortcut(.delete, modifiers: .command)
+                        .disabled(history.items.isEmpty)
+                }
+                Section {
                     Button("Welcome & Practice…", action: actions.welcome)
                     Button("Check for Updates…", action: actions.updates)
                 }
@@ -447,6 +507,20 @@ struct MenuPanelView: View {
         actions.copy(h)
     }
 
+    private func clearHistory() {
+        guard !history.items.isEmpty else { return }
+        selected = nil
+        withAnimation(.easeOut(duration: 0.18)) { cleared = history.clear() }
+    }
+
+    private func undoClear() {
+        guard let items = cleared else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            history.restore(items)
+            cleared = nil
+        }
+    }
+
     private func handle(_ c: MenuPanelModel.Command) {
         switch c {
         case .close: actions.close()
@@ -462,6 +536,8 @@ struct MenuPanelView: View {
         case .settings: actions.settings()
         case .pause: actions.pause()
         case .quit: actions.quit()
+        case .clearHistory: clearHistory()
+        case .undoClear: undoClear()
         }
     }
 }

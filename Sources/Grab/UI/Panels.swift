@@ -1019,7 +1019,7 @@ private struct HistoryView: View {
             }
             .labelStyle(HintLabelStyle())
             Spacer()
-            Text("Memory only").font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            Text(Settings.shared.keepHistory ? "Saved on this Mac, encrypted" : "Memory only").font(.system(size: 10.5)).foregroundStyle(.tertiary)
             Button("Clear All") {
                 history.clear()
                 selection = nil

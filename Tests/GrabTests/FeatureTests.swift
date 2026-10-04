@@ -379,3 +379,46 @@ final class RoundedImageTests: XCTestCase {
         XCTAssertEqual(px.w - m.0 - m.2, 5 * 36 + 26, "cropped to the letters")
     }
 }
+
+/// Clearing history from the menu: everything goes, Undo brings it back (with anything
+/// grabbed since), and the menu changes height without leaving the menu bar.
+@MainActor
+final class MenuPanelTests: XCTestCase {
+    private func spin() { RunLoop.main.run(until: Date().addingTimeInterval(0.5)) }
+
+    func testClearHistoryAndUndo() throws {
+        // Memory-only history: never near a saved one.
+        try XCTSkipIf(Settings.shared.keepHistory)
+        _ = NSApplication.shared
+        History.shared.clear()
+        defer { History.shared.clear() }
+        for t in ["first", "second", "third", "fourth", "fifth"] {
+            History.shared.add(History.Item(mode: .text, payload: .text(t), title: t, thumbnail: nil, color: nil))
+        }
+        let view = MenuPanelView(frontApp: nil, actions: .init(
+            copy: { _ in }, close: {}, history: {}, shelf: {}, settings: {}, welcome: {}, updates: {},
+            showUpdate: {}, pause: {}, toggleApp: { _ in }, prefer: { _, _ in }, quit: {}))
+        let panel = MenuPanel(content: view)
+        let size = try XCTUnwrap(panel.contentView?.fittingSize)
+        // Far off every screen, never key: nothing shows and nothing loses focus.
+        panel.setFrame(NSRect(x: -30_000, y: -30_000, width: size.width, height: size.height), display: true)
+        panel.top = panel.frame.maxY
+        panel.orderFrontRegardless()
+        defer { panel.orderOut(nil) }
+        spin()
+        let full = panel.frame
+
+        panel.model.send(.clearHistory)
+        spin()
+        XCTAssertTrue(History.shared.items.isEmpty)
+        XCTAssertLessThan(panel.frame.height, full.height)
+        XCTAssertEqual(panel.frame.maxY, full.maxY, accuracy: 0.5, "the top stays under the menu bar")
+
+        History.shared.add(History.Item(mode: .text, payload: .text("sixth"), title: "sixth", thumbnail: nil, color: nil))
+        panel.model.send(.undoClear)
+        spin()
+        XCTAssertEqual(History.shared.items.map(\.title), ["sixth", "fifth", "fourth", "third", "second", "first"])
+        XCTAssertEqual(panel.frame.height, full.height, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxY, full.maxY, accuracy: 0.5)
+    }
+}

@@ -345,9 +345,25 @@ final class History {
         if Settings.shared.keepHistory { saveAll() }
     }
 
-    func clear() {
+    /// Forgets every grab, saved ones too. Returns them so the clear can be undone.
+    @discardableResult
+    func clear() -> [Item] {
+        ensureLoaded()
+        let removed = items
         items.removeAll()
-        vault?.erase()
+        appendsSinceRewrite = 0
+        if Settings.shared.keepHistory { openVault(create: false)?.erase() }
+        return removed
+    }
+
+    /// Puts cleared grabs back (Undo), alongside anything grabbed since.
+    func restore(_ removed: [Item]) {
+        let known = Set(items.map(\.id))
+        items += removed.filter { !known.contains($0.id) }
+        items.sort { $0.date > $1.date }
+        let limit = max(1, Settings.shared.historyLimit)
+        if items.count > limit { items.removeLast(items.count - limit) }
+        if Settings.shared.keepHistory { saveAll() }
     }
 
     // MARK: Keep History
