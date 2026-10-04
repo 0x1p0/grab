@@ -74,7 +74,7 @@ enum ImageTools {
     /// so its rectangle carries bits of the page behind those corners. That background is
     /// trimmed off the edges first, and the new corners are cut at least as round as the
     /// source's own, so no slivers of the page are left showing.
-    static func rounded(_ image: CGImage, pointSize: CGSize, points: CGFloat = 12) -> (image: CGImage, pointSize: CGSize)? {
+    static func rounded(_ image: CGImage, pointSize: CGSize, points: CGFloat = 12, trimBleed: Bool = true) -> (image: CGImage, pointSize: CGSize)? {
         guard min(image.width, image.height) >= 48, let px = Pixels(image) else { return nil }
         let scale = pointSize.width > 0 ? CGFloat(image.width) / pointSize.width : 2
 
@@ -82,7 +82,7 @@ enum ImageTools {
         var crop = (top: 0, left: 0, bottom: 0, right: 0)
         var sourceRadius: CGFloat = 0
         let corners = [px.at(0, 0), px.at(px.w - 1, 0), px.at(0, px.h - 1), px.at(px.w - 1, px.h - 1)]
-        if let bg = corners.first, corners.allSatisfy({ Pixels.near($0, bg, 18) }) {
+        if trimBleed, let bg = corners.first, corners.allSatisfy({ Pixels.near($0, bg, 18) }) {
             // Edges that are almost all background are bleed: trim them (a few pixels at most).
             func edge(_ points: [(Int, Int)]) -> Bool {
                 points.filter { Pixels.near(px.at($0.0, $0.1), bg, 18) }.count * 10 >= points.count * 9
@@ -131,6 +131,35 @@ enum ImageTools {
         guard let out = ctx.makeImage() else { return nil }
         let k = pointSize.width > 0 ? pointSize.width / CGFloat(px.w) : 0.5
         return (out, CGSize(width: CGFloat(w) * k, height: CGFloat(h) * k))
+    }
+
+    /// A picture of text, given room to breathe: padding in the text's own background color,
+    /// so it pastes as a tidy card instead of letters touching the edges. Only for solid
+    /// backgrounds; nil when the edges are busy (text over a photo), so nothing is invented.
+    static func padded(_ image: CGImage, pointSize: CGSize) -> (image: CGImage, pointSize: CGSize)? {
+        guard let px = Pixels(image), px.w >= 8, px.h >= 8 else { return nil }
+        let scale = pointSize.width > 0 ? CGFloat(px.w) / pointSize.width : 2
+        // The edges' typical color, and whether they're nearly all that color.
+        var border: [(Int, Int, Int, Int)] = []
+        let step = max(1, (px.w + px.h) / 400)
+        for x in stride(from: 0, to: px.w, by: step) { border.append(px.at(x, 0)); border.append(px.at(x, px.h - 1)) }
+        for y in stride(from: 0, to: px.h, by: step) { border.append(px.at(0, y)); border.append(px.at(px.w - 1, y)) }
+        func median(_ k: KeyPath<(Int, Int, Int, Int), Int>) -> Int { border.map { $0[keyPath: k] }.sorted()[border.count / 2] }
+        let bg = (median(\.0), median(\.1), median(\.2), median(\.3))
+        guard bg.3 > 240, border.filter({ Pixels.near($0, bg, 16) }).count * 100 >= border.count * 85 else { return nil }
+        // About a third of the text's height, between 10 and 20 points.
+        let padPoints = min(20, max(10, pointSize.height * 0.35))
+        let pad = Int((padPoints * scale).rounded())
+        let w = px.w + pad * 2, h = px.h + pad * 2
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(srgbRed: CGFloat(bg.0) / 255, green: CGFloat(bg.1) / 255, blue: CGFloat(bg.2) / 255, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: pad, y: pad, width: px.w, height: px.h))
+        guard let out = ctx.makeImage() else { return nil }
+        return (out, CGSize(width: CGFloat(w) / scale, height: CGFloat(h) / scale))
     }
 
     /// A rounded rectangle with Apple-style continuous corners: each corner is a superellipse

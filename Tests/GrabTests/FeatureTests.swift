@@ -277,4 +277,31 @@ final class RoundedImageTests: XCTestCase {
         XCTAssertEqual(whiteLeft, 0)
         XCTAssertEqual(px.at(px.w / 2, px.h / 2).3, 255)
     }
+
+    /// Text tight to its edges gets padding in its own background color; busy edges don't.
+    func testTextGetsRoomToBreathe() throws {
+        let text = image(400, 60) { ctx in
+            ctx.setFillColor(CGColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: 400, height: 60))
+            ctx.setFillColor(CGColor(red: 0.9, green: 0.9, blue: 0.9, alpha: 1))
+            for i in 0..<8 { ctx.fill(CGRect(x: 4 + i * 48, y: 6, width: 36, height: 48)) }   // "letters" touching top and bottom
+        }
+        let p = try XCTUnwrap(ImageTools.padded(text, pointSize: CGSize(width: 200, height: 30)))
+        // 30 pt tall → about 10.5 pt of padding, 21 px at 2×, on each side.
+        XCTAssertEqual(p.image.width, 400 + 42)
+        XCTAssertEqual(p.image.height, 60 + 42)
+        XCTAssertEqual(p.pointSize.height, 51, accuracy: 0.5)
+        let px = try XCTUnwrap(ImageTools.Pixels(p.image))
+        let source = try XCTUnwrap(ImageTools.Pixels(text))
+        XCTAssertTrue(ImageTools.Pixels.near(px.at(2, 2), source.at(1, 1), 1), "padding is the background color")
+        XCTAssertTrue(ImageTools.Pixels.near(px.at(21 + 10, 21 + 30), source.at(10, 30), 1), "the text is untouched")
+
+        let busy = image(200, 60) { ctx in
+            for i in 0..<20 {
+                ctx.setFillColor(CGColor(red: CGFloat(i % 3) / 2, green: CGFloat(i % 5) / 4, blue: 0.5, alpha: 1))
+                ctx.fill(CGRect(x: i * 10, y: 0, width: 10, height: 60))
+            }
+        }
+        XCTAssertNil(ImageTools.padded(busy, pointSize: CGSize(width: 100, height: 30)))
+    }
 }

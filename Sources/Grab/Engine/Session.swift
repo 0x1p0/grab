@@ -1510,8 +1510,18 @@ final class Session {
                 guard let uri = ImageTools.dataURI(img) else { return failed("Couldn't encode the image") }
                 return .success(.text(uri))
             default:
-                // Rounded corners, so the image pastes looking finished.
-                if Settings.shared.roundImageCorners, let rounded = ImageTools.rounded(img, pointSize: size) {
+                // Pasting looking finished: pictures of text get room around them, and
+                // corners are softly rounded.
+                guard Settings.shared.roundImageCorners else { break }
+                let textual = s.kind.isTextRange || s.kind == .table || s.kind == .list
+                    || (s.kind == .element && !s.isVisual && !s.isBackdrop && s.bestText != nil)
+                if textual {
+                    let base = ImageTools.padded(img, pointSize: size) ?? (img, size)
+                    // Never trim the edges of text: they may hold the tops and tails of letters.
+                    let r = ImageTools.rounded(base.image, pointSize: base.pointSize, trimBleed: false) ?? base
+                    return .success(.image(r.image, pointSize: r.pointSize))
+                }
+                if let rounded = ImageTools.rounded(img, pointSize: size) {
                     return .success(.image(rounded.image, pointSize: rounded.pointSize))
                 }
             }

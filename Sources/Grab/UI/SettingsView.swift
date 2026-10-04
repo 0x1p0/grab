@@ -152,8 +152,8 @@ struct SettingsView: View {
                     Text("Adds to a floating shelf you can reorder; the clipboard always holds the whole shelf.")
                 }
                 Toggle(isOn: $settings.roundImageCorners) {
-                    Text("Round the corners of copied images")
-                    Text("Images paste with soft corners, like a finished screenshot. Turn off for pixel-exact copies.")
+                    Text("Polish copied images")
+                    Text("Soft rounded corners, and pictures of text get a little room around them. Turn off for pixel-exact copies.")
                 }
                 Toggle(isOn: $settings.adaptivePaste) {
                     Text("Adapt code to where you paste")
