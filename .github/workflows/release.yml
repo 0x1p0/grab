@@ -8,6 +8,10 @@ name: Release
 #   NOTARY_KEY_P8              an App Store Connect API key (.p8), base64-encoded
 #   NOTARY_KEY_ID              that key's ID
 #   NOTARY_ISSUER              your App Store Connect issuer ID
+#   TAP_TOKEN                  (optional) a token that can push to 0x1p0/homebrew-tap, to update the cask
+#
+# Without the signing secrets the tag is left alone: publish from your Mac with
+# scripts/release.sh, `gh release create` and scripts/publish-tap.sh.
 
 on:
   push:
@@ -17,9 +21,29 @@ permissions:
   contents: write
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      signing: ${{ steps.secrets.outputs.signing }}
+    steps:
+      - id: secrets
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+        run: |
+          if [ -n "$P12" ]; then
+            echo "signing=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "signing=no" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Developer ID secrets yet, so this tag isn't built here."
+          fi
+
   release:
+    needs: check
+    if: needs.check.outputs.signing == 'yes'
     runs-on: macos-26
     timeout-minutes: 60
+    env:
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -62,4 +86,9 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/Grab-*.dmg dist/Grab-*.zip \
             --title "Grab ${GITHUB_REF_NAME#v}" --generate-notes
-          echo "Homebrew cask:" && cat dist/grab.rb
+
+      - name: Update the Homebrew tap
+        if: env.TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.TAP_TOKEN }}
+        run: scripts/publish-tap.sh "${GITHUB_REF_NAME#v}"

@@ -234,13 +234,19 @@ No other permissions. Grab goes online only to check GitHub for a new version ab
 
 ## Install
 
-**Download:** `Grab-x.y.z.dmg` from GitHub Releases (once releases are public), open it and drag Grab to Applications. Each release also produces a Homebrew cask (`grab.rb`); once it's published to a tap:
+**Homebrew** (private for now: works for anyone with access to this repo):
 
 ```bash
 brew install --cask 0x1p0/tap/grab
 ```
 
-Grab keeps itself up to date: about once a day it checks GitHub for a new release and asks before installing. It only installs an update signed by the same developer as the copy you're running, and your settings and permissions carry over. **Check for Updates…** is in the menu bar.
+It downloads with your GitHub login, from the GitHub CLI (`gh auth login`) or `HOMEBREW_GITHUB_API_TOKEN`. `brew upgrade` picks up new releases. Already built Grab from source? Add `--adopt` to take over the copy in Applications.
+
+**Download:** `Grab-x.y.z.dmg` from [Releases](https://github.com/0x1p0/grab/releases): open it and drag Grab to Applications.
+
+Grab isn't notarized yet, so the first time it opens, macOS stops it: open **System Settings → Privacy & Security** and click **Open Anyway**.
+
+Once Grab is public it keeps itself up to date: about once a day it checks GitHub for a new release and asks before installing. It only installs an update signed by the same developer as the copy you're running, and your settings and permissions carry over. **Check for Updates…** is in the menu bar.
 
 On first launch Grab asks for two permissions:
 
@@ -265,9 +271,16 @@ swift test                         # unit tests
 scripts/release.sh 1.2.0
 ```
 
-builds, signs and packages `dist/Grab-1.2.0.dmg` (to download), `dist/Grab-1.2.0.zip` (what the updater installs) and `dist/grab.rb` (the Homebrew cask). For other people's Macs it needs a **Developer ID Application** certificate (Apple Developer Program) and notarization: save your notary credentials once with `xcrun notarytool store-credentials grab-notary`, then run it with `NOTARY_PROFILE=grab-notary`. Without a Developer ID it signs with your Apple Development certificate and says that build only opens on your own Macs.
+builds, signs and packages `dist/Grab-1.2.0.dmg` (to download), `dist/Grab-1.2.0.zip` (what the updater installs) and `dist/grab.rb` (the Homebrew cask). Then publish it:
 
-On GitHub, every push to `main` builds and runs the tests ([`ci.yml`](.github/workflows/ci.yml)), and pushing a tag like `v1.2.0` builds, signs, notarizes and publishes the release ([`release.yml`](.github/workflows/release.yml)) once the signing secrets listed at the top of that file are set.
+```bash
+gh release create v1.2.0 dist/Grab-1.2.0.dmg dist/Grab-1.2.0.zip
+scripts/publish-tap.sh 1.2.0    # updates the cask in 0x1p0/homebrew-tap
+```
+
+ For other people's Macs it needs a **Developer ID Application** certificate (Apple Developer Program) and notarization: save your notary credentials once with `xcrun notarytool store-credentials grab-notary`, then run it with `NOTARY_PROFILE=grab-notary`. Without a Developer ID it signs with your Apple Development certificate and says that build only opens on your own Macs.
+
+On GitHub, every push to `main` builds and runs the tests ([`ci.yml`](.github/workflows/ci.yml)), and pushing a tag like `v1.2.0` builds, signs, notarizes and publishes the release and the cask ([`release.yml`](.github/workflows/release.yml)) once the secrets listed at the top of that file are set. Until then it leaves tags alone.
 
 ## How it's built
 
