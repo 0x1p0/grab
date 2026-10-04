@@ -19,10 +19,12 @@ final class HighlightCanvasView: NSView {
         var reduceMotion = false
         /// "Increase contrast": a thicker, solid border with no glow.
         var highContrast = false
+        /// Follow the target exactly (a box being drawn) instead of springing to it.
+        var instant = false
 
         static func == (a: Look, b: Look) -> Bool {
             a.hole == b.hole && a.isText == b.isText && a.spotlight == b.spotlight && a.visible == b.visible
-                && a.flash == b.flash && a.busy == b.busy && a.reduceMotion == b.reduceMotion && a.highContrast == b.highContrast
+                && a.flash == b.flash && a.busy == b.busy && a.reduceMotion == b.reduceMotion && a.highContrast == b.highContrast && a.instant == b.instant
                 && a.colors.count == b.colors.count && zip(a.colors, b.colors).allSatisfy { $0 == $1 }
         }
     }
@@ -135,7 +137,7 @@ final class HighlightCanvasView: NSView {
         }
         let hole = rawHole.insetBy(dx: new.isText ? -4 : -4, dy: new.isText ? -3 : -4)
         let r = Self.radius(for: hole.size, text: new.isText)
-        let animate = shown && !new.reduceMotion && old.hole != new.hole
+        let animate = shown && !new.reduceMotion && !new.instant && old.hole != new.hole
 
         setGeometry(hole: hole, radius: r, animated: animate)
         if !shown {
@@ -287,6 +289,7 @@ struct HighlightCanvas: NSViewRepresentable {
         look.busy = model.busy
         look.reduceMotion = reduceMotion
         look.highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        look.instant = model.boxing
         v.apply(look)
     }
 }

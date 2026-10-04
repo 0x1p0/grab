@@ -8,6 +8,8 @@ struct OnboardingView: View {
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var pasted = ""
     @State private var appeared = false
+    @State private var settings = Settings.shared
+    @State private var optionChars = KeyLayout.optionOnlyCharacters()
 
     var body: some View {
         ZStack {
@@ -49,7 +51,7 @@ struct OnboardingView: View {
             }
             HStack(spacing: 8) {
                 Text("Hold").foregroundStyle(.secondary)
-                KeyView(key: "⌥ option", wide: true, size: 12)
+                TriggerKeys(size: 12)
                 Text("hover anything, press").foregroundStyle(.secondary)
                 KeyView(key: "C", size: 12)
                 Text("· switch type").foregroundStyle(.secondary)
@@ -61,6 +63,16 @@ struct OnboardingView: View {
             }
             .font(.system(size: 12.5))
             .padding(.top, 2)
+            if settings.trigger == .option, !optionChars.isEmpty {
+                LayoutTip(characters: optionChars) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { settings.trigger = .rightOption }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: 480)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.orange.opacity(0.1)))
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
         }
     }
 
@@ -71,7 +83,7 @@ struct OnboardingView: View {
                 colors: [Color(hex: 0x2F7BFF), Color(hex: 0x22C3EE)],
                 title: "Accessibility",
                 badge: "Required",
-                detail: "Lets Grab notice ⌥ and read what's under your pointer, like VoiceOver does. It never types, clicks or reads passwords.",
+                detail: "Lets Grab notice \(Settings.shared.trigger.symbol) and read what's under your pointer, like VoiceOver does. It never clicks or reads passwords, and types only when you ask.",
                 granted: permissions.accessibility,
                 reason: .accessibility,
                 actionTitle: "Grant Access",
@@ -82,7 +94,7 @@ struct OnboardingView: View {
                 colors: [Color(hex: 0xFF7A1A), Color(hex: 0xF43F5E)],
                 title: "Screen Recording",
                 badge: "For images & colors",
-                detail: "Lets Grab look around your pointer while you hold ⌥, for images, colors, QR codes and text in pictures. Never recorded or saved.",
+                detail: "Lets Grab look around your pointer while you hold \(Settings.shared.trigger.symbol), for images, colors, QR codes and text in pictures. Never recorded or saved.",
                 granted: permissions.screenRecording,
                 reason: .screenRecording,
                 actionTitle: permissions.screenRecordingNeedsRelaunch ? "Relaunch Grab" : "Grant Access",
@@ -207,31 +219,113 @@ private struct PermissionCard: View {
     }
 }
 
+/// The practice checklist: each tile ticks off when you grab it the right way.
+@Observable
+final class Practice {
+    enum Task: String, CaseIterable {
+        case text, function, color, qr, ocr, box
+
+        var instruction: String {
+            let k = Settings.shared.trigger.symbol
+            switch self {
+            case .text: return "Hold \(k) over the sentence and press C"
+            case .function: return "Over the code, press ↑ until the whole function lights up, then C"
+            case .color: return "Point at the orange swatch and press C for its color"
+            case .qr: return "Point at the QR code and press C to read it"
+            case .ocr: return "Point at the picture, press ← until the HUD says OCR, then C: its words are only pixels"
+            case .box: return "Press R at one corner of a tile, move to the other corner, press C"
+            }
+        }
+
+        var needsScreenRecording: Bool { self != .text && self != .function }
+    }
+
+    static let sentence = "The quick brown fox jumps over the lazy dog."
+    static let qrText = "Grab decoded this QR code ✨ hello from the pixels"
+
+    var done: Set<Task> = []
+    var finished = false
+    @ObservationIgnored private var observer: NSObjectProtocol?
+
+    init() {
+        observer = NotificationCenter.default.addObserver(forName: .grabDidCopy, object: nil, queue: .main) { [weak self] note in
+            guard let e = note.object as? GrabEvent else { return }
+            MainActor.assumeIsolated { self?.handle(e) }
+        }
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    func next(screenRecording: Bool) -> Task? {
+        Task.allCases.first { !done.contains($0) && (screenRecording || !$0.needsScreenRecording) }
+    }
+
+    @MainActor private func handle(_ e: GrabEvent) {
+        guard e.bundleID == Bundle.main.bundleIdentifier else { return }
+        var task: Task?
+        let text = e.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if e.box {
+            task = .box
+        } else {
+            switch e.mode {
+            case .color: task = .color
+            case .qr: task = .qr
+            case .text:
+                if e.codeKind == "function" || (text.contains("func greet") && text.hasSuffix("}")) { task = .function }
+                else if text.contains("Pixels") || text.contains("still reads") { task = .ocr }
+                else if text.count >= 3, Self.sentence.localizedCaseInsensitiveContains(text) { task = .text }
+            default: break
+            }
+        }
+        guard let task, !done.contains(task) else { return }
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.65)) { _ = done.insert(task) }
+        if done.count == Task.allCases.count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+                withAnimation(.easeOut(duration: 0.3)) { self?.finished = true }
+                Sound.shared.play(.boing)
+                Haptics.perform(.levelChange)
+            }
+        }
+    }
+}
+
 /// A row of things to practise on, right inside the welcome window.
 private struct Playground: View {
     @Binding var pasted: String
     let enabled: Bool
+    @State private var practice = Practice()
+    @State private var permissions = Permissions.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Try it right here")
+            HStack(spacing: 10) {
+                Text("Practice")
                     .font(.system(size: 14, weight: .semibold))
-                Text(enabled ? "Hold ⌥ over any tile, press C, then paste below" : "Grant Accessibility first")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
+                progress
                 Spacer()
             }
+            HStack(spacing: 8) {
+                Image(systemName: practice.finished ? "party.popper.fill" : "arrow.turn.down.right")
+                    .foregroundStyle(LinearGradient(colors: Theme.brand, startPoint: .leading, endPoint: .trailing))
+                Text(instruction)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .contentTransition(.opacity)
+                    .id(instruction)
+                    .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
+            }
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: instruction)
             HStack(spacing: 12) {
-                Tile(caption: "Text") {
-                    Text("The quick brown fox jumps over the lazy dog.")
+                Tile(caption: "Text", done: practice.done.contains(.text)) {
+                    Text(Practice.sentence)
                         .font(.system(size: 13.5, weight: .medium))
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                         .padding(10)
                 }
-                Tile(caption: "Code: try ↑ ↓") {
-                    Text("func greet(_ name: String) -> String {\n    if name.isEmpty {\n        return \"Hello!\"\n    }\n    return \"Hi, \\(name)\"\n}")
+                Tile(caption: "Code: ↑ ↓ resize", done: practice.done.contains(.function)) {
+                    Text(verbatim: "func greet(_ name: String) -> String {\n    if name.isEmpty {\n        return \"Hello!\"\n    }\n    return \"Hi, \\(name)\"\n}")
                         .font(.system(size: 9.5, design: .monospaced))
                         .lineLimit(6)
                         .fixedSize(horizontal: true, vertical: false)
@@ -239,13 +333,13 @@ private struct Playground: View {
                         .padding(.horizontal, 9)
                 }
                 .frame(width: 214)
-                Tile(caption: "Color") {
+                Tile(caption: "Color", done: practice.done.contains(.color)) {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color(hex: 0xED6E2A))
                         .padding(10)
                 }
-                Tile(caption: "QR code") {
-                    if let qr = Icons.qrCode("Grab decoded this QR code ✨ hello from the pixels", size: 300) {
+                Tile(caption: "QR code", done: practice.done.contains(.qr)) {
+                    if let qr = Icons.qrCode(Practice.qrText, size: 300) {
                         Image(nsImage: qr)
                             .interpolation(.none)
                             .resizable()
@@ -253,14 +347,13 @@ private struct Playground: View {
                             .padding(10)
                     }
                 }
-                Tile(caption: "Text in an image") {
+                Tile(caption: "Text in an image", done: practice.done.contains(.ocr)) {
                     Image(nsImage: PixelArt.ocrSample)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .padding(10)
                 }
-
             }
             .frame(height: 128)
             .opacity(enabled ? 1 : 0.45)
@@ -284,11 +377,37 @@ private struct Playground: View {
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.regularMaterial))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75))
+        .overlay(Confetti(fire: practice.finished).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous)))
+    }
+
+    private var instruction: String {
+        if !enabled { return "Grant Accessibility first, then try each tile" }
+        if practice.finished { return "You've got it. Grab lives in your menu bar, ready when you hold \(Settings.shared.trigger.symbol)." }
+        if let t = practice.next(screenRecording: permissions.screenRecording) { return t.instruction }
+        return "Turn on Screen Recording to try colors, QR codes, pictures and boxes"
+    }
+
+    private var progress: some View {
+        HStack(spacing: 4) {
+            ForEach(Practice.Task.allCases, id: \.self) { t in
+                Capsule()
+                    .fill(practice.done.contains(t)
+                          ? AnyShapeStyle(LinearGradient(colors: Theme.brand, startPoint: .leading, endPoint: .trailing))
+                          : AnyShapeStyle(Color.primary.opacity(0.12)))
+                    .frame(width: practice.done.contains(t) ? 18 : 10, height: 6)
+            }
+            Text("\(practice.done.count) of \(Practice.Task.allCases.count)")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .padding(.leading, 4)
+        }
     }
 }
 
 private struct Tile<Content: View>: View {
     let caption: String
+    var done = false
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -296,11 +415,52 @@ private struct Tile<Content: View>: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.04)))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(done ? AnyShapeStyle(LinearGradient(colors: Theme.brand, startPoint: .topLeading, endPoint: .bottomTrailing))
+                                           : AnyShapeStyle(Color.primary.opacity(0.08)), lineWidth: done ? 1.6 : 0.75)
+                )
+                .overlay(alignment: .topTrailing) {
+                    if done {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 17, weight: .bold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, Color(hex: 0xEC4F7C))
+                            .background(Circle().fill(.white).padding(2))
+                            .offset(x: 6, y: -6)
+                            .transition(.scale(scale: 0.2).combined(with: .opacity))
+                    }
+                }
             Text(caption)
                 .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(done ? .primary : .secondary)
         }
+    }
+}
+
+/// A burst of brand-colored confetti when the practice is done.
+private struct Confetti: View {
+    let fire: Bool
+    private let colors: [Color] = [Color(hex: 0xFF8A3D), Color(hex: 0xEC4F7C), Color(hex: 0x7C5CFF), Color(hex: 0x22C3EE), Color(hex: 0xFFD166)]
+
+    var body: some View {
+        GeometryReader { g in
+            ZStack {
+                ForEach(0..<48, id: \.self) { i in
+                    let x = CGFloat((i * 37) % 97) / 97 * g.size.width
+                    let drift = CGFloat((i * 53) % 60) - 30
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(colors[i % colors.count])
+                        .frame(width: i % 3 == 0 ? 5 : 7, height: i % 3 == 0 ? 5 : 11)
+                        .rotationEffect(.degrees(fire ? Double((i * 47) % 360) + 600 : 0))
+                        .position(x: x + (fire ? drift : 0), y: fire ? g.size.height + 30 : -30)
+                        .opacity(fire ? 0 : 1)
+                        .animation(.easeIn(duration: 1.4 + Double(i % 7) * 0.13).delay(Double(i % 12) * 0.05), value: fire)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .opacity(fire ? 1 : 0)
     }
 }
 

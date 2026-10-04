@@ -53,6 +53,8 @@ final class FloatingPanel: NSPanel {
 final class Panels {
     static let shared = Panels()
     private var open: [NSPanel] = []
+    /// Pins on screen, so Live ones can be stopped when they close.
+    private(set) var pins: [LivePin] = []
     private var shelfPanel: FloatingPanel?
     private var historyPanel: FloatingPanel?
 
@@ -72,7 +74,14 @@ final class Panels {
         case image(CGImage, size: CGSize)
     }
 
-    func pin(_ content: PinContent, near point: CGPoint) {
+    /// Where a pin came from on screen, so it can be kept up to date ("Live").
+    struct LiveSource {
+        var rect: CGRect
+        /// Read the text there again (OCR) rather than show the picture.
+        var reads: Bool
+    }
+
+    func pin(_ content: PinContent, near point: CGPoint, live: LiveSource? = nil) {
         let size: NSSize
         switch content {
         case .text(let t, let mono):
@@ -87,7 +96,16 @@ final class Panels {
         }
         let p = FloatingPanel(size: size, title: "Pinned")
         if case .image(_, let s) = content, s.width > 0, s.height > 0 { p.contentAspectRatio = s }
-        p.host(PinView(content: content))
+        let model = LivePin(content: content, source: live)
+        model.window = p
+        p.host(PinView(pin: model))
+        pins.append(model)
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: p, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                model.live = false
+                self?.pins.removeAll { $0 === model }
+            }
+        }
         p.place(near: point)
         p.orderFrontRegardless()
         track(p)
@@ -99,6 +117,46 @@ final class Panels {
         let p = FloatingPanel(size: NSSize(width: 420, height: 340), title: "Ask Grab")
         p.minSize = NSSize(width: 320, height: 220)
         p.host(AskView(source: text, initial: task))
+        p.place(near: point)
+        p.orderFrontRegardless()
+        p.makeKey()
+        track(p)
+    }
+
+    // MARK: Updates
+
+    private var updatePanel: FloatingPanel?
+
+    func showUpdate() {
+        let view = UpdateView { [weak self] in self?.updatePanel?.close() }.background(PanelBackground())
+        // Measure the content: the panel's hosting view doesn't size itself.
+        let size = NSHostingController(rootView: view).sizeThatFits(in: NSSize(width: 420, height: 2000))
+        if let p = updatePanel {
+            p.host(view)
+            p.setContentSize(size)
+        } else {
+            let p = FloatingPanel(size: size, title: "Update", resizable: false)
+            p.host(view)
+            p.center()
+            updatePanel = p
+            track(p)
+            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: p, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updatePanel = nil }
+            }
+        }
+        updatePanel?.orderFrontRegardless()
+        updatePanel?.makeKey()
+    }
+
+    // MARK: Compare
+
+    func compare(old: String, new: String, near point: CGPoint) {
+        // Short diffs get a short panel; long ones scroll.
+        let lines = max(old.count, new.count) / 60 + max(old.components(separatedBy: "\n").count, new.components(separatedBy: "\n").count)
+        let height = min(420, max(170, CGFloat(lines) * 22 + 110))
+        let p = FloatingPanel(size: NSSize(width: 520, height: height), title: "Compare")
+        p.minSize = NSSize(width: 340, height: 200)
+        p.host(DiffView(old: old, new: new))
         p.place(near: point)
         p.orderFrontRegardless()
         p.makeKey()
@@ -128,6 +186,7 @@ final class Panels {
     // MARK: History
 
     func showHistory() {
+        History.shared.ensureLoaded()
         if historyPanel == nil {
             let p = FloatingPanel(size: NSSize(width: 560, height: 620), title: "Grab History")
             p.minSize = NSSize(width: 420, height: 320)
@@ -222,13 +281,110 @@ private struct CopyButton: View {
 
 // MARK: - Pin
 
+/// A pin that can keep itself up to date: the same spot on screen captured again every
+/// few seconds (and read again, for text), flashing when it changes. Only while Live is on.
+@MainActor
+@Observable
+final class LivePin {
+    var content: Panels.PinContent
+    let source: Panels.LiveSource?
+    var live = false {
+        didSet {
+            guard live != oldValue else { return }
+            if live { start() } else { stop() }
+        }
+    }
+    var interval: Double = 5 {
+        didSet { if live { stop(); start() } }
+    }
+    var changedAt: Date?
+    var flash = 0
+    @ObservationIgnored weak var window: NSWindow?
+    @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var fingerprint: [UInt8]?
+
+    init(content: Panels.PinContent, source: Panels.LiveSource?) {
+        self.content = content
+        self.source = source
+        interval = source?.reads == true ? 10 : 5
+    }
+
+    var canGoLive: Bool { source != nil && Permissions.shared.screenRecording }
+
+    private func start() {
+        // Keep the pin itself out of its own captures.
+        window?.sharingType = .none
+        task = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.refresh()
+                try? await Task.sleep(for: .seconds(self.interval))
+            }
+        }
+    }
+
+    private func stop() {
+        task?.cancel()
+        task = nil
+        window?.sharingType = .readOnly
+    }
+
+    private func refresh() async {
+        guard let src = source, let cap = try? await ScreenGrabber.shared.capture(src.rect) else { return }
+        if src.reads {
+            let text = await VisionService.shared.read(cap).text.cleanedForClipboard
+            guard !Task.isCancelled, !text.isEmpty, case .text(let old, let mono) = content, old != text else { return }
+            content = .text(text, mono: mono)
+            changed()
+        } else {
+            let print = ImageFingerprint.of(cap.image)
+            defer { fingerprint = print }
+            guard let before = fingerprint ?? (contentImage.map(ImageFingerprint.of)), ImageFingerprint.differs(before, print) else { return }
+            content = .image(cap.image, size: cap.rect.size)
+            changed()
+        }
+    }
+
+    private var contentImage: CGImage? {
+        if case .image(let img, _) = content { return img }
+        return nil
+    }
+
+    private func changed() {
+        changedAt = Date()
+        withAnimation(.easeOut(duration: 0.2)) { flash += 1 }
+        Sound.shared.play(.tick)
+    }
+}
+
+/// A tiny grayscale thumbnail for telling whether a picture changed.
+enum ImageFingerprint {
+    static func of(_ image: CGImage) -> [UInt8] {
+        let side = 16
+        var px = [UInt8](repeating: 0, count: side * side)
+        px.withUnsafeMutableBytes { buf in
+            guard let ctx = CGContext(data: buf.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return }
+            ctx.interpolationQuality = .medium
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        }
+        return px
+    }
+
+    static func differs(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+        guard a.count == b.count, !a.isEmpty else { return true }
+        let total = zip(a, b).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }
+        return Double(total) / Double(a.count) > 2.5
+    }
+}
+
 private struct PinView: View {
-    let content: Panels.PinContent
+    let pin: LivePin
     @State private var hovering = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            switch content {
+            switch pin.content {
             case .text(let t, let mono):
                 ScrollView {
                     Text(t)
@@ -248,18 +404,168 @@ private struct PinView: View {
                     .background(Color.black.opacity(0.04))
             }
             if hovering {
-                CopyButton {
-                    switch content {
-                    case .text(let t, _): Clipboard.write(.text(t))
-                    case .image(let img, let s): Clipboard.write(.image(img, pointSize: s))
+                HStack(spacing: 6) {
+                    if pin.canGoLive { liveControl }
+                    CopyButton {
+                        switch pin.content {
+                        case .text(let t, _): Clipboard.write(.text(t))
+                        case .image(let img, let s): Clipboard.write(.image(img, pointSize: s))
+                        }
                     }
                 }
                 .padding(8)
                 .transition(.opacity)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if pin.live { LiveBadge(changedAt: pin.changedAt).padding(.top, 7).padding(.leading, 70) }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(LinearGradient(colors: Theme.brand, startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 3)
+                .opacity(pin.flash % 2 == 1 ? 1 : 0)
+                .animation(.easeOut(duration: 0.6), value: pin.flash)
+                .allowsHitTesting(false)
+        )
+        .onChange(of: pin.flash) { _, n in
+            if n % 2 == 1 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { pin.flash += 1 } }
+        }
         .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hovering = h } }
         .ignoresSafeArea()
+    }
+
+    private var liveControl: some View {
+        Menu {
+            Toggle("Live", isOn: Binding(get: { pin.live }, set: { pin.live = $0 }))
+            Section("Check every") {
+                ForEach([2.0, 5, 10, 30, 60], id: \.self) { secs in
+                    Toggle(secs < 60 ? "\(Int(secs)) seconds" : "minute", isOn: Binding(get: { pin.interval == secs }, set: { if $0 { pin.interval = secs } }))
+                }
+            }
+        } label: {
+            Label(pin.live ? "Live" : "Go Live", systemImage: pin.live ? "dot.radiowaves.left.and.right" : "arrow.triangle.2.circlepath")
+                .font(.system(size: 11.5, weight: .semibold))
+        } primaryAction: {
+            pin.live.toggle()
+        }
+        .menuStyle(.button)
+        .controlSize(.small)
+        .fixedSize()
+        .help("Keep this pin up to date with what's on screen there")
+    }
+}
+
+private struct LiveBadge: View {
+    let changedAt: Date?
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(Color.red).frame(width: 7, height: 7)
+                .opacity(pulse ? 0.35 : 1)
+                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+            if let changedAt {
+                TimelineView(.periodic(from: .now, by: 5)) { _ in
+                    Text("changed " + HistoryRow.when(changedAt)).font(.system(size: 10, weight: .medium))
+                }
+            } else {
+                Text("LIVE").font(.system(size: 9.5, weight: .heavy, design: .rounded))
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(Color.black.opacity(0.55)))
+        .onAppear { pulse = true }
+    }
+}
+
+// MARK: - Compare
+
+private struct DiffView: View {
+    let old: String
+    let new: String
+    private let result: TextDiff.Result
+
+    init(old: String, new: String) {
+        self.old = old
+        self.new = new
+        result = TextDiff.compare(old, new)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Compare").font(.system(size: 13, weight: .semibold, design: .rounded))
+                stat("+\(result.added)", .green)
+                stat("−\(result.removed)", .red)
+                Text(result.byLine ? "lines" : "words").font(.system(size: 11)).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.top, 26)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
+            ScrollView {
+                Text(rendered)
+                    .font(result.byLine ? .system(size: 11.5, design: .monospaced) : .system(size: 13))
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+            }
+            Divider().opacity(0.5)
+            HStack(spacing: 10) {
+                legend(.red, "on the clipboard")
+                legend(.green, "under the pointer")
+                Spacer()
+                Button("Copy Patch") {
+                    Clipboard.write(.text(TextDiff.patch(old, new)))
+                    Sound.shared.play(.copy)
+                }
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+        }
+        .background(PanelBackground())
+        .ignoresSafeArea()
+    }
+
+    private var rendered: AttributedString {
+        var out = AttributedString()
+        for piece in result.pieces {
+            var a = AttributedString(piece.text)
+            switch piece.kind {
+            case .same:
+                break
+            case .removed:
+                a.backgroundColor = Color.red.opacity(0.16)
+                a.foregroundColor = Color(nsColor: .systemRed)
+                if !result.byLine { a.strikethroughStyle = .single }
+            case .added:
+                a.backgroundColor = Color.green.opacity(0.18)
+                a.foregroundColor = Color(nsColor: .systemGreen)
+            }
+            out += a
+        }
+        return out
+    }
+
+    private func stat(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(color.opacity(0.12)))
+    }
+
+    private func legend(_ color: Color, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(color.opacity(0.35)).frame(width: 10, height: 10)
+            Text(text).font(.system(size: 10.5)).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -443,7 +749,7 @@ private struct ShelfView: View {
             .padding(.horizontal, 12)
 
             List {
-                ForEach(shelf.items) { item in
+                ForEach(Array(shelf.items.enumerated()), id: \.element.id) { index, item in
                     HStack(spacing: 8) {
                         if let t = item.thumbnail {
                             Image(nsImage: t).resizable().aspectRatio(contentMode: .fit).frame(width: 26, height: 20)
@@ -453,6 +759,15 @@ private struct ShelfView: View {
                         }
                         Text(item.title.oneLine).font(.system(size: 12)).lineLimit(2)
                         Spacer(minLength: 0)
+                        if index == shelf.next % max(shelf.items.count, 1), shelf.items.count > 1 {
+                            Text("next")
+                                .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(LinearGradient(colors: Theme.brand, startPoint: .leading, endPoint: .trailing)))
+                                .help("\(Trigger.current.chord("V")) pastes this next")
+                        }
                         Button {
                             shelf.remove(item.id)
                             if shelf.items.isEmpty { Panels.shared.hideShelf() }
@@ -469,7 +784,7 @@ private struct ShelfView: View {
             .scrollContentBackground(.hidden)
 
             HStack {
-                Text("Drag to reorder · ⌥⇧C adds").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                Text("\(Trigger.current.chord("⇧C")) adds · \(Trigger.current.chord("V")) pastes one by one").font(.system(size: 10.5)).foregroundStyle(.secondary)
                 Spacer()
                 CopyButton { shelf.syncClipboard() }
             }
@@ -684,7 +999,7 @@ private struct HistoryView: View {
             Text("Nothing grabbed yet").font(.system(size: 15, weight: .semibold))
             HStack(spacing: 4) {
                 Text("Hold")
-                KeyView(key: "⌥", size: 10)
+                TriggerKeys(size: 10)
                 Text("over anything and press")
                 KeyView(key: "C", size: 10)
             }

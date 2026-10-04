@@ -13,7 +13,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.app = app
         super.init()
         item.button?.image = Icons.statusIcon()
-        item.button?.toolTip = "Grab — hold ⌥ and hover anything"
+        item.button?.toolTip = "Grab — hold \(Trigger.current.symbol) and hover anything"
         menu.delegate = self
         menu.autoenablesItems = false
         item.menu = menu
@@ -53,6 +53,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        History.shared.ensureLoaded()
 
         let header = NSMenuItem()
         let hv = NSHostingView(rootView: MenuHeader())
@@ -159,14 +160,30 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         welcome.image = Icons.symbol("sparkles")
         menu.addItem(welcome)
 
+        if let update = Updater.shared.available {
+            let u = NSMenuItem(title: "Update to Grab \(update.version)…", action: #selector(showUpdate), keyEquivalent: "")
+            u.target = self
+            u.image = Icons.symbol("arrow.down.circle.fill")
+            menu.addItem(u)
+        }
+
         let settings = NSMenuItem(title: "Settings…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
         settings.target = app
         settings.image = Icons.symbol("gearshape")
         menu.addItem(settings)
 
+        let updates = NSMenuItem(title: "Check for Updates…", action: #selector(AppDelegate.checkForUpdates), keyEquivalent: "")
+        updates.target = app
+        updates.image = Icons.symbol("arrow.triangle.2.circlepath")
+        menu.addItem(updates)
+
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Grab", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
+    }
+
+    @objc private func showUpdate() {
+        Panels.shared.showUpdate()
     }
 
     private func historyItem(_ h: History.Item, key: String, showApp: Bool = true) -> NSMenuItem {
@@ -269,7 +286,7 @@ private struct MenuHeader: View {
             if !p.accessibility { return (.orange, "Needs Accessibility access") }
             if s.paused { return (.gray, "Paused") }
             if !p.screenRecording { return (.yellow, "Text & links only (no Screen Recording)") }
-            return (.green, "Ready. Hold ⌥ and hover")
+            return (.green, "Ready. Hold \(s.trigger.symbol) and hover")
         }()
         HStack(spacing: 10) {
             Image(nsImage: NSApp.applicationIconImage)
@@ -284,7 +301,7 @@ private struct MenuHeader: View {
             }
             Spacer(minLength: 4)
             HStack(spacing: 3) {
-                KeyView(key: "⌥", size: 8.5)
+                TriggerKeys(size: 8.5)
                 KeyView(key: "C", size: 8.5)
             }
         }

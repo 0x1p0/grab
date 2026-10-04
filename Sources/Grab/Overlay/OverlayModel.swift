@@ -36,8 +36,18 @@ struct Fly: Equatable, Identifiable {
     var kind: MascotKind = .classic
     var cargo = Cargo(content: .symbol("doc.on.doc", "Copied"), colors: Theme.brand)
     var start = Date()
+    /// A big image or a long text: the mascot strains under it.
+    var heavy = false
 
     static func == (a: Fly, b: Fly) -> Bool { a.id == b.id }
+}
+
+/// The mascot popping up by the pointer when a grab doesn't work out.
+struct Oops: Equatable, Identifiable {
+    let id = UUID()
+    var at: CGPoint
+    var kind: MascotKind
+    var start = Date()
 }
 
 /// Everything the overlay draws. Coordinates are global top-left points.
@@ -62,10 +72,13 @@ final class OverlayModel {
     var spotlight = true
     var warning: String?
     var fly: Fly?
+    var oops: Oops?
     var formats: [FormatOption] = []
     var format: String?
     /// A color written in text (#ED6E2A) rather than picked from pixels.
     var literalColor: RGBAColor?
+    /// ⌥R: a box is being drawn, so the border follows the pointer without springing.
+    var boxing = false
 
     /// Color mode reading pixels: show the loupe instead of a border.
     var pixelColor: Bool { mode == .color && literalColor == nil }

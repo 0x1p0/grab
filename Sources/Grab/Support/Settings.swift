@@ -5,6 +5,74 @@ extension Notification.Name {
     static let grabSettingsChanged = Notification.Name("GrabSettingsChanged")
     /// Settings asks the current mascot to show off.
     static let grabMascotPreview = Notification.Name("GrabMascotPreview")
+    /// After every successful grab; the object is a `GrabEvent`.
+    static let grabDidCopy = Notification.Name("GrabDidCopy")
+}
+
+/// What was just grabbed, for the practice checklist and stats.
+struct GrabEvent {
+    var mode: GrabMode
+    var text: String?
+    var color: RGBAColor?
+    var bundleID: String?
+    var codeKind: String?
+    var ocr: Bool
+    var box: Bool
+    var appended: Bool
+    var format: String?
+    var pixels: Int
+}
+
+/// What you hold to grab.
+enum Trigger: String, CaseIterable, Identifiable {
+    case option, rightOption, controlOption, hyper
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .option: "Option"
+        case .rightOption: "Right Option only"
+        case .controlOption: "Control-Option"
+        case .hyper: "Hyper"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .option: "Either ⌥ key."
+        case .rightOption: "Left ⌥ stays free for typing characters like @ [ ] { } on many keyboards."
+        case .controlOption: "⌃ and ⌥ together. VoiceOver uses this pair too."
+        case .hyper: "⌃⌥⇧⌘ together, for a Hyper key set up with Karabiner or similar. ⇧-shortcuts aren't available."
+        }
+    }
+
+    /// Key caps, for drawing.
+    var keys: [String] {
+        switch self {
+        case .option: ["⌥"]
+        case .rightOption: ["right ⌥"]
+        case .controlOption: ["⌃", "⌥"]
+        case .hyper: ["⌃", "⌥", "⇧", "⌘"]
+        }
+    }
+
+    /// For running text: "Hold ⌥", "Hold right ⌥".
+    var symbol: String {
+        switch self {
+        case .option: "⌥"
+        case .rightOption: "right ⌥"
+        case .controlOption: "⌃⌥"
+        case .hyper: "⌃⌥⇧⌘"
+        }
+    }
+
+    /// The trigger plus a key, as running text: "⌥C", "right ⌥C".
+    func chord(_ key: String) -> String { symbol + key }
+
+    /// ⌥⇧C and friends need ⇧ to be free.
+    var allowsShift: Bool { self != .hyper }
+
+    static var current: Trigger { Settings.shared.trigger }
 }
 
 /// User preferences, persisted to UserDefaults.
@@ -20,10 +88,14 @@ final class Settings {
     var spotlight: Bool { didSet { save("spotlight", spotlight) } }
     var showHints: Bool { didSet { save("showHints", showHints) } }
     var armDelay: Double { didSet { save("armDelay", armDelay) } }
+    var trigger: Trigger { didSet { save("trigger", trigger.rawValue) } }
     var quickCopy: Bool { didSet { save("quickCopy", quickCopy) } }
     var paused: Bool { didSet { save("paused", paused) } }
     var colorFormat: ColorFormat { didSet { save("colorFormat", colorFormat.rawValue) } }
     var historyLimit: Int { didSet { save("historyLimit", historyLimit) } }
+    /// Save history between launches, encrypted (off: memory only).
+    var keepHistory: Bool { didSet { save("keepHistory", keepHistory) } }
+    var keepHistoryDays: Int { didSet { save("keepHistoryDays", keepHistoryDays) } }
     var overlayInRecordings: Bool { didSet { save("overlayInRecordings", overlayInRecordings) } }
     /// Bundle identifiers where holding ⌥ should be left alone.
     var excludedApps: [String] { didSet { save("excludedApps", excludedApps) } }
@@ -43,6 +115,15 @@ final class Settings {
     var appRules: [String: Int] { didSet { save("appRules", appRules) } }
     /// Who carries each grab to the menu bar (`MascotKind` raw value).
     var mascot: String { didSet { save("mascot", mascot) } }
+    /// Mascots dress up for Halloween and the holidays.
+    var seasonal: Bool { didSet { save("seasonal", seasonal) } }
+    /// Your own ⇥ formats: templates and Shortcuts.
+    var customFormats: [CustomFormat] {
+        didSet { save("customFormats", (try? JSONEncoder().encode(customFormats)) ?? Data()) }
+    }
+    /// Look for a new version on GitHub about once a day.
+    var checkForUpdates: Bool { didSet { save("checkForUpdates", checkForUpdates) } }
+    var skippedVersion: String { didSet { d.set(skippedVersion, forKey: "skippedVersion") } }
     var grabCount: Int { didSet { d.set(grabCount, forKey: "grabCount") } }
     var hasOnboarded: Bool { didSet { d.set(hasOnboarded, forKey: "hasOnboarded") } }
 
@@ -54,10 +135,13 @@ final class Settings {
             "spotlight": true,
             "showHints": true,
             "armDelay": 0.18,
+            "trigger": Trigger.option.rawValue,
             "quickCopy": true,
             "paused": false,
             "colorFormat": ColorFormat.hex.rawValue,
             "historyLimit": 12,
+            "keepHistory": false,
+            "keepHistoryDays": 7,
             "overlayInRecordings": false,
             "excludedApps": [String](),
             "formatChoices": [String: String](),
@@ -68,6 +152,9 @@ final class Settings {
             "snapHaptics": true,
             "appRules": [String: Int](),
             "mascot": "snap",
+            "seasonal": true,
+            "checkForUpdates": true,
+            "skippedVersion": "",
             "grabCount": 0,
             "hasOnboarded": false,
         ])
@@ -77,10 +164,13 @@ final class Settings {
         spotlight = d.bool(forKey: "spotlight")
         showHints = d.bool(forKey: "showHints")
         armDelay = d.double(forKey: "armDelay")
+        trigger = Trigger(rawValue: d.string(forKey: "trigger") ?? "") ?? .option
         quickCopy = d.bool(forKey: "quickCopy")
         paused = d.bool(forKey: "paused")
         colorFormat = ColorFormat(rawValue: d.string(forKey: "colorFormat") ?? "") ?? .hex
         historyLimit = d.integer(forKey: "historyLimit")
+        keepHistory = d.bool(forKey: "keepHistory")
+        keepHistoryDays = d.integer(forKey: "keepHistoryDays")
         overlayInRecordings = d.bool(forKey: "overlayInRecordings")
         excludedApps = d.stringArray(forKey: "excludedApps") ?? []
         formatChoices = d.dictionary(forKey: "formatChoices") as? [String: String] ?? [:]
@@ -91,6 +181,10 @@ final class Settings {
         snapHaptics = d.bool(forKey: "snapHaptics")
         appRules = d.dictionary(forKey: "appRules") as? [String: Int] ?? [:]
         mascot = d.string(forKey: "mascot") ?? "snap"
+        seasonal = d.bool(forKey: "seasonal")
+        customFormats = d.data(forKey: "customFormats").flatMap { try? JSONDecoder().decode([CustomFormat].self, from: $0) } ?? []
+        checkForUpdates = d.bool(forKey: "checkForUpdates")
+        skippedVersion = d.string(forKey: "skippedVersion") ?? ""
         grabCount = d.integer(forKey: "grabCount")
         hasOnboarded = d.bool(forKey: "hasOnboarded")
     }

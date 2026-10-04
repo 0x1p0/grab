@@ -162,16 +162,17 @@ final class AdaptiveText: NSObject, NSPasteboardItemDataProvider {
     }
 }
 
-/// Recent grabs, kept in memory only — nothing you grab is written to disk.
+/// Recent grabs. In memory only, unless you turn on Keep History (then encrypted on
+/// disk, see `HistoryVault`); secrets are never saved.
 @Observable
 final class History {
     static let shared = History()
 
     struct Item: Identifiable {
-        let id = UUID()
+        let id: UUID
         let mode: GrabMode
         let title: String
-        let date = Date()
+        let date: Date
         let thumbnail: NSImage?
         let color: RGBAColor?
         /// App it came from, and the page or window title.
@@ -186,6 +187,8 @@ final class History {
         private let image: CompressedImage?
 
         init(mode: GrabMode, payload: Payload, title: String, thumbnail: NSImage?, color: RGBAColor?) {
+            id = UUID()
+            date = Date()
             self.mode = mode
             self.title = title
             self.thumbnail = thumbnail
@@ -197,6 +200,61 @@ final class History {
                 stored = payload
                 image = nil
             }
+        }
+
+        /// A grab saved by Keep History.
+        init?(record r: HistoryVault.Record) {
+            id = r.id
+            date = r.date
+            mode = GrabMode(rawValue: r.mode) ?? .text
+            title = r.title
+            thumbnail = r.thumbnail.flatMap { NSImage(data: $0) }
+            color = r.color.flatMap { $0.count == 4 ? RGBAColor(r: $0[0], g: $0[1], b: $0[2], a: $0[3]) : nil }
+            appName = r.appName
+            bundleID = r.bundleID
+            source = r.source
+            sourceURL = r.sourceURL.flatMap(URL.init(string:))
+            guard let (payload, picture) = Self.restore(r, color: color) else { return nil }
+            stored = payload
+            image = picture
+        }
+
+        private static func restore(_ r: HistoryVault.Record, color: RGBAColor?) -> (Payload?, CompressedImage?)? {
+            switch r.kind {
+            case "text": return (.text(r.text ?? ""), nil)
+            case "code": return (.code(r.text ?? ""), nil)
+            case "link": return r.text.flatMap(URL.init(string:)).map { (.link($0), nil) }
+            case "file": return r.text.map { (.file(URL(fileURLWithPath: $0)), nil) }
+            case "color": return color.map { (.color($0, r.text ?? $0.hex), nil) }
+            case "image":
+                guard let png = r.image else { return nil }
+                let size = r.pointSize.flatMap { $0.count == 2 ? CGSize(width: $0[0], height: $0[1]) : nil } ?? .zero
+                return (nil, CompressedImage(png: png, pointSize: size))
+            default: return nil
+            }
+        }
+
+        /// What Keep History writes. Never for secrets.
+        func record() -> HistoryVault.Record? {
+            guard !isSecret else { return nil }
+            var r = HistoryVault.Record(id: id, date: date, mode: mode.rawValue, title: title, kind: "text",
+                                        appName: appName, bundleID: bundleID, source: source, sourceURL: sourceURL?.absoluteString)
+            switch stored {
+            case .text(let t): r.text = t
+            case .code(let t): r.kind = "code"; r.text = t
+            case .link(let u): r.kind = "link"; r.text = u.absoluteString
+            case .file(let u): r.kind = "file"; r.text = u.path
+            case .color(let c, let f): r.kind = "color"; r.text = f; r.color = [c.r, c.g, c.b, c.a]
+            case .image, .none:
+                guard let image, let png = image.pngData else { return nil }
+                r.kind = "image"
+                r.image = png
+                r.pointSize = [image.pointSize.width, image.pointSize.height]
+            }
+            if let t = thumbnail, let cg = t.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                r.thumbnail = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+            }
+            return r
         }
 
         var payload: Payload {
@@ -263,16 +321,99 @@ final class History {
     }
 
     private(set) var items: [Item] = []
+    @ObservationIgnored private var vault: HistoryVault?
+    @ObservationIgnored private var loaded = false
+    @ObservationIgnored private var appendsSinceRewrite = 0
 
     func add(_ item: Item) {
+        ensureLoaded()
         items.insert(item, at: 0)
         let limit = max(1, Settings.shared.historyLimit)
         if items.count > limit { items.removeLast(items.count - limit) }
+        guard Settings.shared.keepHistory, !item.isSecret, let vault = openVault(create: false) else { return }
+        appendsSinceRewrite += 1
+        if appendsSinceRewrite > limit {
+            // The file only grows between rewrites; trim it back to what's shown.
+            saveAll()
+        } else {
+            DispatchQueue.global(qos: .utility).async { if let r = item.record() { vault.append(r) } }
+        }
     }
 
-    func remove(_ id: UUID) { items.removeAll { $0.id == id } }
+    func remove(_ id: UUID) {
+        items.removeAll { $0.id == id }
+        if Settings.shared.keepHistory { saveAll() }
+    }
 
-    func clear() { items.removeAll() }
+    func clear() {
+        items.removeAll()
+        vault?.erase()
+    }
+
+    // MARK: Keep History
+
+    /// Saved grabs are read on first use (the menu, the history window, the next grab),
+    /// not at launch, so Grab starts as light as ever.
+    func ensureLoaded() {
+        guard Settings.shared.keepHistory, !loaded else { return }
+        loaded = true
+        guard let vault = openVault(create: false) else { return }
+        let all = vault.load()
+        let cutoff = Date().addingTimeInterval(-Double(max(1, Settings.shared.keepHistoryDays)) * 86_400)
+        let limit = max(1, Settings.shared.historyLimit)
+        var kept = all.filter { $0.date >= cutoff }
+        if kept.count > limit { kept = Array(kept.suffix(limit)) }
+        if kept.count != all.count { vault.rewrite(kept) }
+        let known = Set(items.map(\.id))
+        items += kept.reversed().compactMap(Item.init(record:)).filter { !known.contains($0.id) }
+        items.sort { $0.date > $1.date }
+        if items.count > limit { items.removeLast(items.count - limit) }
+    }
+
+    /// Turning Keep History on saves what's here now; turning it off deletes the file and its key.
+    func setKeepHistory(_ on: Bool) {
+        if on {
+            guard openVault(create: true) != nil else { return }
+            loaded = true
+            saveAll()
+        } else {
+            vault?.erase()
+            HistoryVault.Keychain.delete()
+            vault = nil
+            loaded = false
+        }
+    }
+
+    private func saveAll() {
+        guard let vault = openVault(create: false) else { return }
+        appendsSinceRewrite = 0
+        let snapshot = items
+        DispatchQueue.global(qos: .utility).async {
+            vault.rewrite(snapshot.reversed().compactMap { $0.record() })
+        }
+    }
+
+    #if DEBUG
+    /// Keep History against a throwaway file and key, never the keychain (`vaulttest:<dir>`).
+    func debugUseVault(_ v: HistoryVault) {
+        vault = v
+        loaded = false
+    }
+
+    /// Forgets what's in memory and reads the saved history back, like a fresh launch.
+    func debugReload() {
+        items.removeAll()
+        loaded = false
+        ensureLoaded()
+    }
+    #endif
+
+    private func openVault(create: Bool) -> HistoryVault? {
+        if let vault { return vault }
+        guard let key = HistoryVault.Keychain.key(create: create) else { return nil }
+        vault = HistoryVault(url: HistoryVault.defaultURL, key: key)
+        return vault
+    }
 
     /// Items grouped by the app they came from, most recently used app first.
     func byApp(_ list: [Item]) -> [(app: String, bundleID: String?, items: [Item])] {
@@ -294,6 +435,21 @@ final class CompressedImage: @unchecked Sendable {
     private let lock = NSLock()
     private var bitmap: CGImage?
     private var png: Data?
+
+    /// Restored from Keep History: stays compressed until it's copied again.
+    init(png: Data, pointSize: CGSize) {
+        self.pointSize = pointSize
+        self.png = png
+    }
+
+    /// The PNG, compressing now if the background pass hasn't finished.
+    var pngData: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let png { return png }
+        guard let bitmap else { return nil }
+        return NSBitmapImageRep(cgImage: bitmap).representation(using: .png, properties: [:])
+    }
 
     init(_ image: CGImage, pointSize: CGSize) {
         self.pointSize = pointSize
@@ -341,20 +497,36 @@ final class Shelf {
     }
 
     var items: [Item] = []
+    /// ⌥V pastes the items one at a time; this is the next one.
+    var next = 0
 
     func add(_ item: Item) { items.append(item) }
 
     func remove(_ id: UUID) {
+        if let i = items.firstIndex(where: { $0.id == id }), i < next { next -= 1 }
         items.removeAll { $0.id == id }
         syncClipboard()
     }
 
     func move(from: IndexSet, to: Int) {
         items.move(fromOffsets: from, toOffset: to)
+        next = 0
         syncClipboard()
     }
 
-    func clear() { items.removeAll() }
+    func clear() {
+        items.removeAll()
+        next = 0
+    }
+
+    /// The item ⌥V should paste now, moving the queue along. Starts over after the last.
+    func takeNext() -> (item: Item, index: Int)? {
+        guard !items.isEmpty else { return nil }
+        if next >= items.count { next = 0 }
+        let i = next
+        next += 1
+        return (items[i], i)
+    }
 
     /// The clipboard always holds the shelf, in order: text joined by newlines,
     /// images as extra items.

@@ -53,6 +53,32 @@ enum Formats {
     }
 
     static func options(_ family: FormatFamily, scope s: Scope, source: (title: String?, url: URL?) = (nil, nil)) -> [FormatOption] {
+        builtIn(family, scope: s, source: source) + custom(for: family)
+    }
+
+    /// Your own formats that apply to this kind of grab.
+    static func custom(for family: FormatFamily) -> [FormatOption] {
+        let formats = Settings.shared.customFormats
+        guard !formats.isEmpty else { return [] }
+        let target: CustomFormat.Target?
+        switch family {
+        case .code, .terminal: target = .code
+        case .link: target = .link
+        case .image: target = .image
+        case .text, .table, .list: target = .text
+        default: target = family.smartKind != nil ? .text : nil
+        }
+        guard let target else { return [] }
+        return formats.filter { $0.targets.contains(target) && (target != .image || $0.shortcut != nil) }
+            .map { FormatOption(id: $0.formatID, title: $0.name) }
+    }
+
+    static func customFormat(_ id: String) -> CustomFormat? {
+        guard id.hasPrefix("custom.") else { return nil }
+        return Settings.shared.customFormats.first { $0.formatID == id }
+    }
+
+    private static func builtIn(_ family: FormatFamily, scope s: Scope, source: (title: String?, url: URL?)) -> [FormatOption] {
         if family.smartKind != nil, let v = s.smart { return SmartTypes.options(for: v) }
         switch family {
         case .text:
@@ -71,9 +97,10 @@ enum Formats {
             if let f = s.code?.fileURL, let l = s.code?.lines, let host = Git.remoteHost(for: f, lines: l) {
                 out.append(.init(id: "permalink", title: host))
             }
+            out.append(.init(id: "picture", title: "Picture"))
             return out + codeExtras(s)
         case .terminal:
-            return [.init(id: "code", title: "Text"), .init(id: "markdown", title: "Markdown")] + codeExtras(s)
+            return [.init(id: "code", title: "Text"), .init(id: "markdown", title: "Markdown"), .init(id: "picture", title: "Picture")] + codeExtras(s)
         case .link:
             var out: [FormatOption] = [.init(id: "url", title: "URL"), .init(id: "markdown", title: "Markdown"), .init(id: "title", title: "Title")]
             if s.videoPage != nil { out.append(.init(id: "attime", title: "At current time")) }

@@ -84,10 +84,22 @@ extension Inspector {
         return found >= 2
     }
 
+    struct FormControl {
+        var name: String
+        var value: String
+        var role: String
+        var element: AXUIElement
+    }
+
     /// Label → value for every control in a container, in reading order. Password fields are skipped.
     func formFields(_ root: AXUIElement) -> [(String, String)] {
+        formControls(root).map { ($0.name, $0.value) }
+    }
+
+    /// Every control in a container with its label, in reading order. Password fields are skipped.
+    func formControls(_ root: AXUIElement) -> [FormControl] {
         let deadline = CFAbsoluteTimeGetCurrent() + 0.8
-        var out: [(String, String)] = []
+        var out: [FormControl] = []
         var used: [String: Int] = [:]
         var lastText: String?
         var stack: [AXUIElement] = [root]
@@ -127,13 +139,63 @@ extension Inspector {
                 }
                 used[name, default: 0] += 1
                 if let n = used[name], n > 1 { name += " \(n)" }
-                out.append((name, value))
+                out.append(FormControl(name: name, value: value, role: role, element: e))
                 lastText = nil
                 continue
             }
             stack.append(contentsOf: (v[AXAttr.children] as? [AXUIElement] ?? []).reversed())
         }
         return out
+    }
+
+    #if DEBUG
+    nonisolated(unsafe) static var fillNote = ""
+    #endif
+
+    /// Fields ⌥F can type into.
+    private static let fillableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+
+    /// ⌥F: writes `values` into the text fields of the form at `root`, matched by label.
+    /// Returns how many were filled, out of how many text fields there are.
+    func fillForm(_ root: AXUIElement, with values: [(String, String)]) -> (filled: Int, fields: Int) {
+        let controls = formControls(root).filter { Self.fillableRoles.contains($0.role) }
+        let matches = FormFill.match(fields: controls.map(\.name), values: values)
+        #if DEBUG
+        Self.fillNote = "fill root=\(root.string(AXAttr.role) ?? "?") fields=\(controls.map { "\($0.role):\($0.name)" })\n"
+        #endif
+        let pairs = zip(controls, matches).compactMap { c, m in m.map { (c.element, values[$0].1) } }
+        // Focus each field and set its value, the way typing would: web views only take
+        // a new value for the focused field.
+        for (e, text) in pairs {
+            _ = e.set("AXFocused", kCFBooleanTrue)
+            _ = e.set(AXAttr.value, text as CFString)
+        }
+        // Browsers update values a moment later; anything that didn't take gets its
+        // whole text replaced as a selection instead.
+        usleep(150_000)
+        for (e, text) in pairs where (e.attribute(AXAttr.value) as? String) != text {
+            _ = e.set("AXFocused", kCFBooleanTrue)
+            var range = CFRange(location: 0, length: ((e.attribute(AXAttr.value) as? String) ?? "").utf16.count)
+            if let all = AXValueCreate(.cfRange, &range) { _ = e.set(kAXSelectedTextRangeAttribute, all) }
+            _ = e.set(kAXSelectedTextAttribute, text as CFString)
+        }
+        usleep(100_000)
+        let filled = pairs.filter { (e, text) in (e.attribute(AXAttr.value) as? String) == text }.count
+        return (filled, controls.count)
+    }
+
+    /// The form around `element`: the nearest ancestor holding two or more controls.
+    func formRoot(around element: AXUIElement) -> AXUIElement? {
+        var e: AXUIElement? = element
+        for _ in 0..<12 {
+            guard let cur = e else { return nil }
+            let role = cur.string(AXAttr.role) ?? ""
+            // Never the whole page or window: only a form-sized container counts.
+            if ["AXWebArea", "AXApplication", "AXWindow", "AXScrollArea", "AXSplitGroup"].contains(role) { return nil }
+            if (Self.formContainerRoles.contains(role) || role == "AXForm") && hasFormControls(cur) { return cur }
+            e = cur.attribute(AXAttr.parent).flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
+        }
+        return nil
     }
 
     // MARK: Video pages

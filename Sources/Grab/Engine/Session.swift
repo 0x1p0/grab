@@ -148,6 +148,9 @@ final class Session {
     private var lastSnap: (kind: ScopeKind, frame: CGRect)?
     private var lastSnapTime: CFTimeInterval = 0
     private var lastAnnouncement: CFTimeInterval = 0
+    /// ⌥R: the corner a box is being drawn from; the pointer is the other corner.
+    private var boxAnchor: CGPoint?
+    static let boxRole = "GrabBox"
 
     private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
@@ -211,6 +214,7 @@ final class Session {
         codeLoading.removeAll()
         appendCount = 0
         lastSnap = nil
+        boxAnchor = nil
         if smartCache.count > 600 { smartCache.removeAll() }
         axQueue.async { [inspector] in inspector.reset() }
 
@@ -230,13 +234,14 @@ final class Session {
             model.hints = s.showHints
             model.spotlight = s.spotlight
             model.warning = IsSecureEventInputEnabled()
-                ? "Secure input is on in another app, so ⌥C can't be heard right now."
+                ? "Secure input is on in another app, so \(s.trigger.chord("C")) can't be heard right now."
                 : nil
             model.options = []
             model.preview = .none
             model.formats = []
             model.format = nil
             model.literalColor = nil
+            model.boxing = false
         }
         withAnimation(.easeOut(duration: 0.16)) { model.visible = true }
         overlay.show()
@@ -276,6 +281,8 @@ final class Session {
         timer = nil
         dwell?.cancel()
         pendingCopy = false
+        boxAnchor = nil
+        model.boxing = false
         withAnimation(.easeOut(duration: cancelled ? 0.12 : 0.2)) {
             model.visible = false
         }
@@ -330,7 +337,7 @@ final class Session {
 
     private func tick() {
         guard armed else { return }
-        if !debugHold && !CGEventSource.flagsState(.combinedSessionState).contains(.maskAlternate) {
+        if !debugHold && !KeyTap.triggerIsDown(Settings.shared.trigger) {
             onLostOption?()
             disarm()
             return
@@ -358,6 +365,12 @@ final class Session {
     // MARK: Inspection
 
     private func requestInspection() {
+        if boxAnchor != nil {
+            dirty = false
+            lastInspect = CACurrentMediaTime()
+            applyBox()
+            return
+        }
         inspecting = true
         dirty = false
         let p = lastPoint
@@ -619,6 +632,12 @@ final class Session {
     /// moves reuse the result.
     private func analysisRegion(_ s: Scope, at p: CGPoint) -> (key: String, rect: CGRect, covers: Bool)? {
         guard s.frame.isFinite, p.x.isFinite, p.y.isFinite else { return nil }
+        if s.role == Self.boxRole {
+            // A box is read whole, whatever its size.
+            let f = s.frame.integral
+            guard f.isUsable, let key = f.gridKey else { return nil }
+            return (key, f, true)
+        }
         var r = s.frame
         let scale = screenScale(for: s.frame)
         let pixels = s.frame.width * s.frame.height * scale * scale
@@ -706,6 +725,20 @@ final class Session {
             if a.didOCR, !icon, s.text?.nonBlank == nil, !s.textPending, let t = a.fullText, Self.meaningful(t) {
                 ins.scopes[i].ocrText = t
                 ins.scopes[i].textIsOCR = true
+            }
+            if s.role == Self.boxRole {
+                // Everything in the box counts, not just what's under the pointer.
+                if let code = a.layout.barcodes.max(by: { $0.rect.width * $0.rect.height < $1.rect.width * $1.rect.height }) {
+                    ins.scopes[i].barcode = code.payload
+                    ins.scopes[i].barcodeKind = code.kind
+                }
+                for t in a.layout.tables where s.frame.contains(t.rect.center) {
+                    var ts = Scope(kind: .table, frame: t.rect.insetBy(dx: -3, dy: -3), label: "Table", text: t.tsv)
+                    ts.textIsOCR = true
+                    ts.analysisDone = true
+                    added.append(ts)
+                }
+                continue
             }
 
             for code in a.layout.barcodes where !codesSeen.contains(code.payload) {
@@ -851,7 +884,8 @@ final class Session {
             self?.runAnalysis(key: key, frame: frame, scopeFrame: s.frame, ocr: ocr, covers: covers, gen: gen)
         }
         dwell = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+        // A box being drawn changes size constantly; read it once it rests.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (s.role == Self.boxRole ? 0.16 : 0.06), execute: work)
     }
 
     private func runAnalysis(key: String, frame: CGRect, scopeFrame: CGRect, ocr: Bool, covers: Bool, gen: Int) {
@@ -879,7 +913,7 @@ final class Session {
     /// something that isn't plain text, so codes are found even when apps don't
     /// expose them as images (CSS backgrounds, canvases, video, screenshots).
     private func scheduleQRScan() {
-        guard Permissions.shared.screenRecording, let s = current, inspection?.codeRegion == nil else { return }
+        guard boxAnchor == nil, Permissions.shared.screenRecording, let s = current, inspection?.codeRegion == nil else { return }
         if s.kind == .barcode || (s.kind.isTextRange && !s.textIsOCR) || s.kind == .code { return }
         let p = lastPoint
         let cell = qrCell(p)
@@ -1028,6 +1062,11 @@ final class Session {
 
     private func smartMode(for s: Scope, enabled: [GrabMode]) -> GrabMode {
         func ok(_ m: GrabMode) -> Bool { enabled.contains(m) }
+        if s.role == Self.boxRole {
+            if s.barcode != nil, ok(.qr) { return .qr }
+            if s.bestText != nil || !s.analysisDone, ok(.text) { return .text }
+            return ok(.image) ? .image : (enabled.first ?? .text)
+        }
         if s.kind == .barcode, ok(.qr) { return .qr }
         if s.fileURL != nil, ok(.file) { return .file }
         if s.linkIsSelf, ok(.link) { return .link }
@@ -1146,6 +1185,24 @@ final class Session {
     private func formattedPreview(_ s: Scope, _ info: (family: FormatFamily, options: [FormatOption], selected: FormatOption?)) -> Preview? {
         guard let opt = info.selected else { return nil }
         let f = opt.id
+        if let custom = Formats.customFormat(f) {
+            if let name = custom.shortcut { return .text("Runs “\(name)” on it and copies the result", meta: "Shortcut · \(custom.name)") }
+            let sample: Payload? = {
+                switch mode {
+                case .text: return s.bestText.map { .text($0.cleanedForClipboard) }
+                case .link: return linkURL(for: s).map { .link($0) }
+                default: return nil
+                }
+            }()
+            guard let sample else { return nil }
+            let out = Template.render(custom.template, values: templateValues(sample, scope: s))
+            let lines = out.components(separatedBy: "\n")
+            if lines.count > 1 { return .snippet(lines.prefix(4).map { $0.truncated(64) }.joined(separator: "\n") + (lines.count > 4 ? "\n…" : ""), meta: custom.name) }
+            return .text(out.truncated(160), meta: custom.name)
+        }
+        if f == "picture", info.family == .code || info.family == .terminal {
+            return .text("A shareable picture of this code, in color", meta: "Picture")
+        }
         if mode == .text, let v = s.smart, !["plain", "code", "markdown", "reference", "permalink"].contains(f),
            let out = SmartTypes.render(v, as: f) {
             let meta = "\(v.kind.title) · \(opt.title)"
@@ -1387,6 +1444,16 @@ final class Session {
         }
         func failed(_ why: String) -> Result<Payload, Error> { .failure(GrabError.failed(why)) }
 
+        if let custom = Formats.customFormat(f) {
+            return await renderCustom(custom, p, scope: s)
+        }
+        if f == "picture", info.family == .code || info.family == .terminal, case .text(let code) = p {
+            let lang = s.code?.isTerminal == true ? "console" : (s.code?.language ?? "")
+            let title = s.code?.fileURL?.lastPathComponent ?? (s.code?.isTerminal == true ? "Terminal" : nil)
+            let first = s.code?.fileURL != nil ? s.code?.lines?.lowerBound : nil
+            guard let img = CodeImage.render(code, language: lang, title: title, firstLine: first) else { return failed("Couldn't draw the code") }
+            return .success(.image(img, pointSize: CGSize(width: CGFloat(img.width) / 2, height: CGFloat(img.height) / 2)))
+        }
         switch info.family {
         case .text:
             switch f {
@@ -1456,6 +1523,49 @@ final class Session {
             }
         }
         return .success(applyFormat(p, scope: s, mode: m))
+    }
+
+    /// Values for `{tokens}` in your own formats.
+    private func templateValues(_ p: Payload, scope s: Scope) -> [String: String] {
+        var text = ""
+        var url = inspection?.sourceURL
+        switch p {
+        case .text(let t), .code(let t): text = t
+        case .link(let u):
+            url = u
+            text = (s.text?.cleanedForClipboard.nonBlank ?? u.absoluteString).oneLine
+        case .file(let u): text = u.path
+        case .color(_, let f): text = f
+        case .image: text = ""
+        }
+        return Template.values(text: text, url: url, title: inspection?.sourceTitle, app: inspection?.appName,
+                               language: s.code?.language, file: s.code?.fileURL, line: s.code?.lines?.lowerBound)
+    }
+
+    private func renderCustom(_ f: CustomFormat, _ p: Payload, scope s: Scope) async -> Result<Payload, Error> {
+        guard let name = f.shortcut else {
+            return .success(.text(Template.render(f.template, values: templateValues(p, scope: s))))
+        }
+        let input: Data?, ext: String
+        switch p {
+        case .image(let img, _):
+            input = ImageTools.pngData(img)
+            ext = "png"
+        default:
+            input = templateValues(p, scope: s)["text"]?.data(using: .utf8)
+            ext = "txt"
+        }
+        guard let input, let out = await ShortcutRunner.run(name, input: input, ext: ext) else {
+            return .failure(GrabError.failed("“\(name)” didn't return anything"))
+        }
+        switch out {
+        case .text(let t): return .success(.text(t))
+        case .image(let data):
+            guard let src = CGImageSourceCreateWithData(data as CFData, nil), let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+                return .failure(GrabError.failed("“\(name)” returned an unreadable image"))
+            }
+            return .success(.image(img, pointSize: CGSize(width: img.width, height: img.height)))
+        }
     }
 
     private func resolve(_ s: Scope, mode m: GrabMode, at point: CGPoint) async -> Result<Payload, Error> {
@@ -1621,6 +1731,27 @@ final class Session {
         History.shared.add(item)
         Settings.shared.grabCount += 1
         onCopied?(landing)
+
+        var text: String?
+        var pixels = 0
+        switch payload {
+        case .text(let t), .code(let t): text = t
+        case .link(let u): text = u.absoluteString
+        case .file(let u): text = u.path
+        case .color(_, let f): text = f
+        case .image(let img, _): pixels = img.width * img.height
+        }
+        let event = GrabEvent(mode: m, text: text, color: color, bundleID: inspection?.bundleID, codeKind: s.code?.kind.rawValue,
+                              ocr: s.textIsOCR || (m == .text && s.text == nil), box: s.role == Self.boxRole, appended: appended,
+                              format: formatInfo(s, m).selected?.id, pixels: pixels)
+        NotificationCenter.default.post(name: .grabDidCopy, object: event)
+        if let milestone = Stats.shared.takeMilestone() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+                Sound.shared.play(.boing)
+                self?.showToast(Toast(success: true, title: "\(milestone.formatted()) grabs!",
+                                      detail: Stats.savedPhrase(Stats.shared.seconds).capitalizedFirst + " so far", mode: .text))
+            }
+        }
     }
 
     // MARK: Mascot
@@ -1644,8 +1775,14 @@ final class Session {
         }
         let from = m == .color ? point : s.frame.center
         let target = m == .color ? CGRect(x: point.x - 18, y: point.y - 18, width: 36, height: 36) : s.frame
-        return fly(Fly(from: from, to: item.center, mode: m, color: color, target: target, kind: kind,
-                       cargo: Cargo(content: content, colors: colors)))
+        var trip = Fly(from: from, to: item.center, mode: m, color: color, target: target, kind: kind,
+                       cargo: Cargo(content: content, colors: colors))
+        switch payload {
+        case .image(let img, _): trip.heavy = img.width * img.height > 3_000_000
+        case .text(let t), .code(let t): trip.heavy = t.count > 2_000
+        default: break
+        }
+        return fly(trip)
     }
 
     private func fly(_ f: Fly) -> TimeInterval {
@@ -1679,6 +1816,14 @@ final class Session {
     private func fail(_ error: Error, mode m: GrabMode) {
         Sound.shared.play(.error)
         Haptics.perform(.generic)
+        let kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
+        if kind != .off, kind != .classic, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let oops = Oops(at: lastPoint, kind: kind)
+            model.oops = oops
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.25) { [weak self] in
+                if self?.model.oops?.id == oops.id { self?.model.oops = nil }
+            }
+        }
         let message = (error as? GrabError)?.errorDescription ?? "Couldn't grab that"
         let hint = m == .text ? "Try ← → for Image, or ↑ ↓ to change the area" : "Try ← → for another type"
         showToast(Toast(success: false, title: message, detail: hint, mode: m))
@@ -1713,6 +1858,16 @@ final class Session {
             }
             return
         }
+        switch a {
+        case .box:
+            toggleBox()
+            return
+        case .pasteNext:
+            pasteNext()
+            return
+        default:
+            break
+        }
         if a == .speak, Speaker.shared.isSpeaking {
             Speaker.shared.stop()
             Sound.shared.play(.tick)
@@ -1743,7 +1898,7 @@ final class Session {
                 if a == .speak {
                     Speaker.shared.speak(text)
                     Sound.shared.play(.tick)
-                    self.showToast(Toast(success: true, title: "Speaking", detail: "⌥S again to stop", mode: .text))
+                    self.showToast(Toast(success: true, title: "Speaking", detail: "\(Trigger.current.chord("S")) again to stop", mode: .text))
                     return
                 }
                 let task: AssistTask = a == .translate ? .translate : (s.textIsOCR && s.code == nil && s.smart == nil ? .fix : .explain)
@@ -1758,8 +1913,14 @@ final class Session {
                 }
                 self.endHold()
                 Sound.shared.play(.scope)
+                // Pictures of the screen and text read from it can be kept live.
+                let fromPixels = s.role == Self.boxRole || s.textIsOCR || (s.text == nil && s.ocrText != nil)
                 switch p {
-                case .image(let img, let size): Panels.shared.pin(.image(img, size: size), near: point)
+                case .image(let img, let size):
+                    let live = s.imageURL == nil || s.role == Self.boxRole ? Panels.LiveSource(rect: s.frame, reads: false) : nil
+                    Panels.shared.pin(.image(img, size: size), near: point, live: live)
+                case .text(let t) where m == .text && fromPixels && s.code == nil:
+                    Panels.shared.pin(.text(t, mono: false), near: point, live: Panels.LiveSource(rect: s.frame, reads: true))
                 case .text(let t), .code(let t): Panels.shared.pin(.text(t, mono: s.code != nil || m == .qr), near: point)
                 case .link(let u): Panels.shared.pin(.text(u.absoluteString, mono: false), near: point)
                 case .file(let u): Panels.shared.pin(.text(u.path, mono: true), near: point)
@@ -1769,10 +1930,150 @@ final class Session {
                 await self.open(s, mode: m, at: point)
             case .look:
                 await self.quickLook(s, mode: m, at: point)
-            case .undo:
+            case .compare:
+                await self.compare(s, mode: m, at: point)
+            case .fill:
+                await self.fillForm(s, at: point)
+            case .undo, .box, .pasteNext:
                 break
             }
         }
+    }
+
+    // MARK: Box
+
+    /// ⌥R starts a box at the pointer; move to size it, C copies everything inside.
+    /// R again goes back to pointing.
+    private func toggleBox() {
+        if boxAnchor != nil {
+            boxAnchor = nil
+            model.set(\.boxing, false)
+            Sound.shared.play(.scope)
+            Haptics.perform(.alignment)
+            inspection = nil
+            selectedID = nil
+            requestInspection()
+            return
+        }
+        guard Permissions.shared.screenRecording else {
+            Sound.shared.play(.bump)
+            showToast(Toast(success: false, title: "Boxes need Screen Recording", detail: "Grab reads what's inside from the pixels", mode: mode))
+            return
+        }
+        boxAnchor = lastPoint
+        sticky = nil
+        userMode = nil
+        model.set(\.boxing, true)
+        Sound.shared.play(.scope)
+        Haptics.perform(.alignment)
+        applyBox()
+    }
+
+    private func applyBox() {
+        guard let a = boxAnchor else { return }
+        let p = lastPoint
+        let r = CGRect(x: min(a.x, p.x), y: min(a.y, p.y), width: max(abs(p.x - a.x), 3), height: max(abs(p.y - a.y), 3))
+        var box = Scope(kind: .element, frame: r, label: "Box · \(Int(r.width.rounded())) × \(Int(r.height.rounded()))")
+        box.isVisual = true
+        box.role = Self.boxRole
+        // Keep the same scope (and its results) while the box doesn't change.
+        if let old = inspection?.scopes.first(where: { $0.role == Self.boxRole }), old.frame.isNearlyEqual(r, tolerance: 0.5) {
+            return
+        }
+        var ins = Inspection(point: p, pid: 0, scopes: [box], defaultID: box.id)
+        // The app whose window is under the box. Grab's own normal windows count (the practice
+        // tiles), its overlay and floating panels don't.
+        let me = getpid()
+        if let w = WindowList.top(at: CGPoint(x: r.midX, y: r.midY), accept: { $0.layer < WindowList.overlayLayer && ($0.pid != me || $0.layer == 0) }),
+           let app = NSRunningApplication(processIdentifier: w.pid) {
+            ins.pid = w.pid
+            ins.appName = app.localizedName
+            ins.bundleID = app.bundleIdentifier
+        }
+        apply(ins)
+    }
+
+    // MARK: Paste queue
+
+    /// ⌥V: pastes the shelf one item at a time, in order, into whatever has focus.
+    private func pasteNext() {
+        let shelf = Shelf.shared
+        guard let (item, index) = shelf.takeNext() else {
+            Sound.shared.play(.bump)
+            showToast(Toast(success: false, title: "The shelf is empty",
+                            detail: "\(Trigger.current.chord("⇧C")) collects things to paste one by one", mode: mode))
+            return
+        }
+        Clipboard.write(item.payload)
+        Keystroke.paste()
+        Sound.shared.play(.tick)
+        Haptics.perform(.alignment)
+        let n = shelf.items.count
+        let detail = index + 1 < n ? "Next: " + shelf.items[index + 1].title.oneLine.truncated(48) : "That was the last · \(Trigger.current.chord("V")) starts over"
+        showToast(Toast(success: true, title: "Pasted \(index + 1) of \(n)", detail: detail, mode: item.mode))
+    }
+
+    // MARK: Compare
+
+    /// ⌥D: the clipboard against what's under the pointer.
+    private func compare(_ s: Scope, mode m: GrabMode, at point: CGPoint) async {
+        guard let clip = NSPasteboard.general.string(forType: .string)?.nonBlank else {
+            Sound.shared.play(.bump)
+            showToast(Toast(success: false, title: "Nothing to compare with", detail: "Copy one version, then \(Trigger.current.chord("D")) over the other", mode: m))
+            return
+        }
+        guard let text = await actionText(s, mode: m, at: point)?.nonBlank else {
+            fail(GrabError.noText, mode: m)
+            return
+        }
+        let old = clip.cleanedForClipboard, new = text.cleanedForClipboard
+        if old == new {
+            Sound.shared.play(.copy)
+            showToast(Toast(success: true, title: "Identical", detail: "Same as your clipboard, character for character", mode: .text))
+            return
+        }
+        endHold()
+        Sound.shared.play(.scope)
+        Panels.shared.compare(old: old, new: new, near: point)
+    }
+
+    // MARK: Fill
+
+    /// ⌥F: values on the clipboard (from a form copied with ⇥ Fields, or "Label: value"
+    /// lines) typed into the matching fields of the form under the pointer.
+    private func fillForm(_ s: Scope, at point: CGPoint) async {
+        let values = FormFill.parse(NSPasteboard.general.string(forType: .string) ?? "")
+        guard !values.isEmpty else {
+            Sound.shared.play(.bump)
+            showToast(Toast(success: false, title: "No form data on the clipboard",
+                            detail: "Copy a form with ⇥ Fields, or lines like “Name: Ada”", mode: .text))
+            return
+        }
+        let inspector = self.inspector
+        let start = s.element ?? inspection?.leaf
+        guard let start else {
+            fail(GrabError.failed("No form here"), mode: .text)
+            return
+        }
+        let result: (filled: Int, fields: Int)? = await withCheckedContinuation { c in
+            axQueue.async {
+                guard let root = inspector.formRoot(around: start) else { return c.resume(returning: nil) }
+                c.resume(returning: inspector.fillForm(root, with: values))
+            }
+        }
+        guard let result, result.fields > 0 else {
+            fail(GrabError.failed("No form here"), mode: .text)
+            return
+        }
+        guard result.filled > 0 else {
+            Sound.shared.play(.bump)
+            showToast(Toast(success: false, title: "No fields matched", detail: "Labels on the clipboard: " + values.prefix(3).map(\.0).joined(separator: ", "), mode: .text))
+            return
+        }
+        Sound.shared.play(.copy)
+        Haptics.perform(.levelChange)
+        model.flash += 1
+        showToast(Toast(success: true, title: "Filled \(result.filled) of \(result.fields) fields", detail: "Check them before you submit", mode: .text))
     }
 
     /// Ends the hold after handing off to another window.
@@ -1977,6 +2278,8 @@ final class Session {
             out["trace"] = Array(debugTrace.suffix(6))
             debugTrace.removeAll()
             out["preview"] = "\(model.preview)".truncated(300)
+            out["toast"] = model.toast.map { "\($0.title) — \($0.detail)" } ?? ""
+            out["note"] = axQueue.sync { Inspector.fillNote }
         }
         return out
     }

@@ -124,6 +124,18 @@ struct KeyView: View {
     }
 }
 
+/// The keys you hold to grab (⌥, right ⌥, ⌃⌥…), as key caps.
+struct TriggerKeys: View {
+    var size: CGFloat = 11
+    var body: some View {
+        HStack(spacing: size * 0.3) {
+            ForEach(Settings.shared.trigger.keys, id: \.self) { k in
+                KeyView(key: k, wide: k.count > 1, size: size)
+            }
+        }
+    }
+}
+
 struct BrandGradientText: View {
     let text: String
     var size: CGFloat
@@ -162,7 +174,7 @@ enum PermissionReason: String, CaseIterable, Identifiable {
 
     var summary: String {
         switch self {
-        case .accessibility: "Required. Lets Grab notice ⌥ and read what's under your pointer, the same way VoiceOver does."
+        case .accessibility: "Required. Lets Grab notice \(Trigger.current.symbol) and read what's under your pointer, the same way VoiceOver does."
         case .screenRecording: "Optional. Lets Grab look at the pixels around your pointer for images, colors, QR codes and text inside pictures."
         }
     }
@@ -171,22 +183,23 @@ enum PermissionReason: String, CaseIterable, Identifiable {
     var points: [(String, String, String)] {
         switch self {
         case .accessibility:
+            let k = Trigger.current.symbol
             return [
-                ("keyboard", "Notices ⌥ and C",
-                 "Grab watches only modifier keys like ⌥. While you hold ⌥ it also sees key presses, so C, the arrows, Tab and the action keys work. Nothing you type is recorded, and keys that aren't Grab's go straight through to your app."),
+                ("keyboard", "Notices \(k) and C",
+                 "Grab watches only modifier keys like \(k). While you hold \(k) it also sees key presses, so C, the arrows, Tab and the action keys work. Nothing you type is recorded, and keys that aren't Grab's go straight through to your app."),
                 ("cursorarrow.rays", "Reads what's under the pointer",
                  "Apps describe their text, links, files, tables and buttons to accessibility tools. Grab asks for the thing under your pointer so it can copy the exact word, paragraph, link or file."),
-                ("hand.raised", "Never controls anything",
-                 "Grab doesn't click, type, move windows or change apps. It never reads password fields. What it reads isn't stored or sent anywhere; history lives in memory only."),
+                ("hand.raised", "Acts only when you ask",
+                 "Grab never clicks, moves windows or changes apps, and never reads password fields. It types in only two cases, both on your command: \(Trigger.current.chord("V")) pastes the next shelf item (Grab presses ⌘V for you) and \(Trigger.current.chord("F")) fills a form from your clipboard. What it reads isn't sent anywhere."),
                 ("xmark.circle", "Without it",
-                 "Grab can't work: macOS won't tell it when ⌥ is held or what's under the pointer."),
+                 "Grab can't work: macOS won't tell it when \(k) is held or what's under the pointer."),
             ]
         case .screenRecording:
             return [
                 ("photo", "Copies what you see",
                  "Images exactly as they appear, colors from any pixel, QR codes and barcodes, and text inside pictures, videos, games and apps that don't describe their content (on-device OCR)."),
-                ("scope", "Only while you hold ⌥",
-                 "Grab looks only at the area around your pointer, only during a hold. Its own border and HUD are left out of every capture."),
+                ("scope", "Only while you hold \(Trigger.current.symbol)",
+                 "Grab looks only at the area around your pointer, only during a hold, or at a pinned area you've set to Live (until you turn it off or close the pin). Its own border and HUD are left out of every capture."),
                 ("lock.shield", "Never records",
                  "No video, nothing uploaded, no screenshots kept. OCR runs on your Mac in a short-lived helper that quits when you're done. (Quick Look and Open use a temporary file only when you ask, cleared at next launch.)"),
                 ("xmark.circle", "Without it",
@@ -223,7 +236,7 @@ struct OtherAccessNote: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("No other permissions", systemImage: "checkmark.shield").font(.system(size: 12, weight: .semibold))
-            Text("Grab never asks for your files, contacts, camera, microphone or location. It goes online only for currency exchange rates (only currency codes are sent; you can turn it off) and, when you copy a web image, to fetch the original file from the address your browser already loaded it from. Translation and AI run on-device with Apple's frameworks.")
+            Text("Grab never asks for your files, contacts, camera, microphone or location. It goes online only to check GitHub for a new version about once a day, for currency exchange rates (only currency codes are sent), and, when you copy a web image, to fetch the original from the address your browser already loaded it from. The first two can be turned off. Translation and AI run on-device with Apple's frameworks. Running one of your Shortcuts from a custom format does whatever that shortcut does.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

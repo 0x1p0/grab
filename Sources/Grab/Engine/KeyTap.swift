@@ -14,12 +14,21 @@ enum TapAction {
     case append
     /// Content moved under the cursor; cached layouts are stale.
     case scrolled
-    /// An action key while armed: ⏎ open, space Quick Look, P pin, S speak, T translate, E ask, Z undo.
+    /// An action key while armed: ⏎ open, space Quick Look, P pin, S speak, T translate, E ask, Z undo,
+    /// R box, V paste next, D compare, F fill.
     case action(GrabAction)
 }
 
 enum GrabAction: String, CaseIterable {
     case open, look, pin, speak, translate, ask, undo
+    /// R: grab a rectangle from here to the pointer.
+    case box
+    /// V: paste the next shelf item.
+    case pasteNext
+    /// D: compare with the clipboard.
+    case compare
+    /// F: fill the form under the pointer from the clipboard.
+    case fill
 }
 
 /// A system-wide keyboard tap that turns "hold ⌥" into a Grab session.
@@ -46,7 +55,11 @@ final class KeyTap {
         var copyKeyCodes: Set<Int64> = [8]
         /// Physical keys for actions while armed (letters follow the layout too).
         var actionKeyCodes: [Int64: GrabAction] = [36: .open, 76: .open, 49: .look]
+        var trigger: Trigger = .option
     }
+
+    /// Marks keystrokes Grab sends itself (⌘V for the paste queue) so the tap lets them through.
+    static let syntheticTag: Int64 = 0x6772_6162
 
     /// Delivered on the main queue.
     var onAction: ((TapAction) -> Void)?
@@ -218,8 +231,42 @@ final class KeyTap {
 
     // MARK: Event handling (tap thread)
 
-    private static let otherModifiers: CGEventFlags = [.maskCommand, .maskControl, .maskShift]
-    private static let chordModifiers: CGEventFlags = [.maskCommand, .maskControl]
+    private static let modifierKeys: CGEventFlags = [.maskCommand, .maskControl, .maskShift, .maskAlternate]
+    /// Modifiers that mean "someone else's shortcut" when they join the trigger.
+    private static let chordModifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate]
+    // Device-dependent bits for telling left ⌥ from right ⌥ (NX_DEVICELALTKEYMASK / NX_DEVICERALTKEYMASK).
+    private static let leftOptionBit: UInt64 = 0x20
+    private static let rightOptionBit: UInt64 = 0x40
+
+    /// Whether the trigger is down, and which modifiers are held beyond it.
+    /// For "right ⌥ only", a held left ⌥ counts as an extra ⌥.
+    static func split(_ flags: CGEventFlags, _ trigger: Trigger) -> (held: Bool, extra: CGEventFlags) {
+        let mods = flags.intersection(modifierKeys)
+        switch trigger {
+        case .option:
+            return (mods.contains(.maskAlternate), mods.subtracting(.maskAlternate))
+        case .rightOption:
+            var extra = mods.subtracting(.maskAlternate)
+            if flags.rawValue & leftOptionBit != 0 { extra.insert(.maskAlternate) }
+            return (flags.rawValue & rightOptionBit != 0, extra)
+        case .controlOption:
+            let need: CGEventFlags = [.maskControl, .maskAlternate]
+            return (mods.isSuperset(of: need), mods.subtracting(need))
+        case .hyper:
+            return (mods.isSuperset(of: modifierKeys), [])
+        }
+    }
+
+    /// Whether the trigger's modifiers are down right now, from any thread. A backstop
+    /// for lost key-ups, so it doesn't rely on left/right bits being reported here.
+    static func triggerIsDown(_ trigger: Trigger) -> Bool {
+        let mods = CGEventSource.flagsState(.combinedSessionState).intersection(modifierKeys)
+        switch trigger {
+        case .option, .rightOption: return mods.contains(.maskAlternate)
+        case .controlOption: return mods.isSuperset(of: [.maskControl, .maskAlternate])
+        case .hyper: return mods.isSuperset(of: modifierKeys)
+        }
+    }
 
     private func handleFlagsEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         switch type {
@@ -244,6 +291,7 @@ final class KeyTap {
             return handleKeyDown(event)
 
         case .keyUp:
+            if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticTag { return Unmanaged.passUnretained(event) }
             let code = event.getIntegerValueField(.keyboardEventKeycode)
             if swallowedKeyUps.remove(code) != nil {
                 if !optionHeld { updateTaps() }
@@ -257,19 +305,18 @@ final class KeyTap {
     }
 
     private func handleFlags(_ flags: CGEventFlags) {
-        let option = flags.contains(.maskAlternate)
-        let others = !flags.intersection(Self.otherModifiers).isEmpty
+        let (held, extra) = Self.split(flags, config.trigger)
 
-        if !option {
+        if !held {
             if optionHeld { endHold() }
             return
         }
         if !optionHeld {
-            beginHold(chord: others)
-        } else if others && !suppressed {
+            beginHold(chord: !extra.isEmpty)
+        } else if !extra.isEmpty && !suppressed {
             // Shift is allowed once the overlay is up (⌥⇧C appends, ⌥⇧Tab cycles back);
             // anything else, or shift before arming, is someone else's shortcut.
-            let onlyShift = flags.intersection(Self.chordModifiers).isEmpty
+            let onlyShift = extra.intersection(Self.chordModifiers).isEmpty
             if !(onlyShift && armed) { suppress(notify: .disarm) }
         }
     }
@@ -349,11 +396,13 @@ final class KeyTap {
 
         guard optionHeld else { return pass }
         guard !suppressed else { return pass }
-        if !event.flags.intersection(Self.chordModifiers).isEmpty {
+        if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticTag { return pass }
+        let extra = Self.split(event.flags, config.trigger).extra
+        if !extra.intersection(Self.chordModifiers).isEmpty {
             suppress(notify: .disarm)
             return pass
         }
-        let shift = event.flags.contains(.maskShift)
+        let shift = extra.contains(.maskShift)
         if shift && !armed {
             suppress(notify: .disarm)
             return pass

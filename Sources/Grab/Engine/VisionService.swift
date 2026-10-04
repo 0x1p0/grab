@@ -111,17 +111,20 @@ actor VisionService {
         p.standardOutput = fromWorker
         p.standardError = FileHandle.nullDevice
         p.qualityOfService = .userInitiated
-        p.terminationHandler = { [weak self] proc in
-            Task { await self?.exited(proc) }
+        // The service lives as long as the app, so these hold it strongly: a weak reference
+        // read from the reader thread while a reply was being delivered could crash.
+        let service = self
+        p.terminationHandler = { proc in
+            Task { await service.exited(proc) }
         }
         try p.run()
         process = p
         input = toWorker.fileHandleForWriting
         let output = fromWorker.fileHandleForReading
         // Replies are read on their own thread and handed back to the actor.
-        let reader = Thread { [weak self] in
+        let reader = Thread {
             while let (reply, data) = Frame.read(VisionReply.self, from: output) {
-                Task { await self?.deliver(reply, data) }
+                Task { await service.deliver(reply, data) }
             }
         }
         reader.name = "Grab.VisionReplies"

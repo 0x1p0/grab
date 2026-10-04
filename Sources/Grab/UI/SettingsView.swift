@@ -27,15 +27,17 @@ struct SettingsView: View {
                     }
                     Spacer()
                     HStack(spacing: 4) {
-                        KeyView(key: "⌥", size: 11)
+                        TriggerKeys(size: 11)
                         Text("+").foregroundStyle(.tertiary)
                         KeyView(key: "C", size: 11)
                     }
                 }
                 .padding(.vertical, 4)
+                StatsRow()
             }
 
             Section {
+                TriggerPicker(selection: $settings.trigger)
                 LabeledContent {
                     HStack {
                         Slider(value: $settings.armDelay, in: 0.05...0.6)
@@ -47,11 +49,11 @@ struct SettingsView: View {
                     }
                 } label: {
                     Text("Overlay delay")
-                    Text("How long to hold ⌥ before the border appears.")
+                    Text("How long to hold \(settings.trigger.symbol) before the border appears.")
                 }
                 Toggle(isOn: $settings.quickCopy) {
-                    Text("Instant ⌥C")
-                    Text("⌥C grabs even before the overlay shows. Turn off if you type ç with ⌥C.")
+                    Text("Instant \(settings.trigger.chord("C"))")
+                    Text("\(settings.trigger.chord("C")) grabs even before the overlay shows. Turn off if you type ç with ⌥C.")
                 }
                 Toggle("Pause Grab", isOn: $settings.paused)
             } header: {
@@ -98,7 +100,7 @@ struct SettingsView: View {
 
             Section {
                 if settings.excludedApps.isEmpty {
-                    Text("Grab works everywhere. Add apps where holding ⌥ already means something, like Figma's measurements.")
+                    Text("Grab works everywhere. Add apps where holding \(settings.trigger.symbol) already means something, like Figma's measurements.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                 }
@@ -138,13 +140,13 @@ struct SettingsView: View {
 
             Section {
                 LabeledContent {
-                    HStack(spacing: 4) { KeyView(key: "⌥", size: 10); KeyView(key: "⇥", size: 10) }
+                    HStack(spacing: 4) { TriggerKeys(size: 10); KeyView(key: "⇥", size: 10) }
                 } label: {
                     Text("Switch format")
                     Text("Code · Markdown · file:line · GitHub link. Dates as ISO/Unix/calendar events, prices converted, JSON pretty, tables as CSV/JSON, images as subject or palette… Grab remembers your choice per kind.")
                 }
                 LabeledContent {
-                    HStack(spacing: 4) { KeyView(key: "⌥", size: 10); KeyView(key: "⇧", size: 10); KeyView(key: "C", size: 10) }
+                    HStack(spacing: 4) { TriggerKeys(size: 10); KeyView(key: "⇧", size: 10); KeyView(key: "C", size: 10) }
                 } label: {
                     Text("Collect on the shelf")
                     Text("Adds to a floating shelf you can reorder; the clipboard always holds the whole shelf.")
@@ -161,6 +163,8 @@ struct SettingsView: View {
             } header: {
                 Text("Code & formats")
             }
+
+            CustomFormatsSection()
 
             Section {
                 Picker("Search with", selection: $settings.searchEngine) {
@@ -184,7 +188,7 @@ struct SettingsView: View {
                     }
                 } label: {
                     Text("On-device AI")
-                    Text("⌥E explains, summarizes, fixes OCR text or turns it into JSON with Apple Intelligence, on your Mac.")
+                    Text("\(settings.trigger.chord("E")) explains, summarizes, fixes OCR text or turns it into JSON with Apple Intelligence, on your Mac.")
                 }
             } header: {
                 Text("Actions")
@@ -259,11 +263,21 @@ struct SettingsView: View {
 
             Section {
                 Stepper("Keep the last \(settings.historyLimit) grabs", value: $settings.historyLimit, in: 1...200)
-                Button("Search History…") { Panels.shared.showHistory() }
+                Toggle(isOn: $settings.keepHistory) {
+                    Text("Keep history after quitting")
+                    Text("Saved encrypted on this Mac with a key in your keychain. Secrets are never saved. Off: memory only, gone when Grab quits.")
+                }
+                .onChange(of: settings.keepHistory) { _, on in History.shared.setKeepHistory(on) }
+                if settings.keepHistory {
+                    Picker("Forget grabs after", selection: $settings.keepHistoryDays) {
+                        Text("1 day").tag(1)
+                        Text("7 days").tag(7)
+                        Text("30 days").tag(30)
+                        Text("90 days").tag(90)
+                    }
+                }
                 HStack {
-                    Text("History lives in memory only and is never written to disk.")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+                    Button("Search History…") { Panels.shared.showHistory() }
                     Spacer()
                     Button("Clear") { history.clear() }
                         .disabled(history.items.isEmpty)
@@ -298,6 +312,14 @@ struct SettingsView: View {
             Section {
                 Toggle("Open at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, on in LoginItem.set(on) }
+                Toggle(isOn: $settings.checkForUpdates) {
+                    Text("Check for updates automatically")
+                    Text("About once a day Grab asks GitHub for the latest release. Nothing about you or your grabs is sent, and nothing installs without your OK.")
+                }
+                Toggle(isOn: $settings.seasonal) {
+                    Text("Seasonal outfits")
+                    Text("Mascots dress up for Halloween and the winter holidays.")
+                }
                 HStack {
                     Button("Welcome & Playground…", action: openOnboarding)
                     Spacer()
@@ -388,11 +410,15 @@ private struct ActionKeysGrid: View {
         ("T", "Translate it"),
         ("E", "Ask on-device AI about it"),
         ("Z", "Undo the last grab and restore the clipboard"),
+        ("R", "Draw a box: move to size it, then C copies what's inside"),
+        ("D", "Compare with what's on the clipboard"),
+        ("F", "Fill the form under the pointer from the clipboard"),
+        ("V", "Paste the next item on the shelf"),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("While holding ⌥").font(.system(size: 12, weight: .medium))
+            Text("While holding \(Settings.shared.trigger.symbol)").font(.system(size: 12, weight: .medium))
             ForEach(rows, id: \.0) { key, text in
                 HStack(spacing: 8) {
                     KeyView(key: key, size: 10).frame(width: 24)
@@ -445,5 +471,233 @@ private struct MascotPicker: View {
             Text(current.blurb).font(.system(size: 11.5)).foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// "Hold to grab": which modifier starts a grab, with a nudge for keyboards that type
+/// everyday characters with ⌥.
+private struct TriggerPicker: View {
+    @Binding var selection: Trigger
+    @State private var optionChars = KeyLayout.optionOnlyCharacters()
+
+    var body: some View {
+        Picker(selection: $selection) {
+            ForEach(Trigger.allCases) { t in
+                Text("\(t.title)   \(t.symbol)").tag(t)
+            }
+        } label: {
+            Text("Hold to grab")
+            Text(selection.detail)
+        }
+        if selection == .option, !optionChars.isEmpty {
+            LayoutTip(characters: optionChars) { selection = .rightOption }
+        }
+    }
+}
+
+/// Shown when the keyboard layout types @ [ ] { } with ⌥.
+struct LayoutTip: View {
+    let characters: [Character]
+    let useRightOption: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "keyboard.badge.ellipsis")
+                .font(.system(size: 15))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Your keyboard types \(characters.map(String.init).joined(separator: " ")) with ⌥")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Grab with right ⌥ and keep left ⌥ for typing.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 6)
+            Button("Use Right ⌥", action: useRightOption)
+                .controlSize(.small)
+        }
+    }
+}
+
+/// Your own ⇥ formats: templates and Shortcuts.
+private struct CustomFormatsSection: View {
+    @Bindable private var settings = Settings.shared
+    @State private var expanded: UUID?
+    @State private var shortcuts: [String] = []
+
+    var body: some View {
+        Section {
+            if settings.customFormats.isEmpty {
+                Text(verbatim: "Add your own formats to the \(settings.trigger.chord("⇥")) list: a template like [{title}]({url}), or any Shortcut that takes text or an image.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach($settings.customFormats) { $format in
+                CustomFormatRow(format: $format, expanded: expanded == format.id) {
+                    withAnimation(.easeOut(duration: 0.18)) { expanded = expanded == format.id ? nil : format.id }
+                } delete: {
+                    settings.customFormats.removeAll { $0.id == format.id }
+                }
+            }
+            Menu("Add Format…") {
+                Button("Template") { add(CustomFormat(name: "My format", template: "{text}", targets: [.text])) }
+                Menu("Example") {
+                    ForEach(CustomFormat.examples) { ex in
+                        Button("\(ex.name)   \(ex.template.replacingOccurrences(of: "\n", with: " ⏎ "))") { add(ex) }
+                    }
+                }
+                Menu("Run a Shortcut") {
+                    if shortcuts.isEmpty { Text("No shortcuts found") }
+                    ForEach(shortcuts, id: \.self) { name in
+                        Button(name) { add(CustomFormat(name: name, template: "", shortcut: name, targets: [.text])) }
+                    }
+                }
+            }
+            .fixedSize()
+        } header: {
+            Text("Your formats")
+        }
+        .task { shortcuts = await ShortcutRunner.list() }
+    }
+
+    private func add(_ f: CustomFormat) {
+        var copy = f
+        copy.id = UUID()
+        settings.customFormats.append(copy)
+        expanded = copy.id
+    }
+}
+
+private struct CustomFormatRow: View {
+    @Binding var format: CustomFormat
+    let expanded: Bool
+    let toggle: () -> Void
+    let delete: () -> Void
+
+    private static let sample = Template.values(
+        text: "Grab copies anything on your Mac", url: URL(string: "https://example.com/grab"),
+        title: "Grab — point and copy", app: "Safari", language: "swift", file: URL(fileURLWithPath: "/tmp/App.swift"), line: 12
+    )
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: format.shortcut != nil ? "square.2.layers.3d.fill" : "curlybraces")
+                    .foregroundStyle(LinearGradient(colors: Theme.brand, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 18)
+                TextField("Name", text: $format.name)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                Text(format.targets.sorted { $0.rawValue < $1.rawValue }.map(\.title).joined(separator: " · "))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Button(action: toggle) {
+                    Image(systemName: "chevron.right").rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                Button(action: delete) { Image(systemName: "minus.circle.fill") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }
+            if expanded {
+                if let name = format.shortcut {
+                    Text("Runs “\(name)” with the grab as its input (text, or a PNG for images) and copies what it returns.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack(alignment: .top) {
+                        TextField("Template", text: $format.template, axis: .vertical)
+                            .font(.system(size: 12, design: .monospaced))
+                            .lineLimit(1...5)
+                        Menu {
+                            Section("Values") {
+                                ForEach(CustomFormat.tokens, id: \.0) { t in
+                                    Button("\(t.0)   \(t.1)") { format.template += t.0 }
+                                }
+                            }
+                            Section("Filters, like {text|upper}") {
+                                ForEach(CustomFormat.filters, id: \.0) { f in Text("\(f.0)   \(f.1)") }
+                            }
+                        } label: {
+                            Image(systemName: "plus.circle")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                    }
+                    Text(Template.render(format.template, values: Self.sample))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(4)
+                        .textSelection(.enabled)
+                }
+                HStack(spacing: 12) {
+                    Text("Offer on").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    ForEach(CustomFormat.Target.allCases.filter { $0 != .image || format.shortcut != nil }) { t in
+                        Toggle(t.title, isOn: Binding(
+                            get: { format.targets.contains(t) },
+                            set: { on in if on { format.targets.insert(t) } else if format.targets.count > 1 { format.targets.remove(t) } }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 11.5))
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// Counts and time saved, with a card to share.
+private struct StatsRow: View {
+    @State private var stats = Stats.shared
+    @State private var copied = false
+
+    var body: some View {
+        if stats.total == 0 {
+            Text("Your grabs get counted here. Counts only; nothing you grab is kept for this.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+        } else {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(stats.total.formatted())
+                        .font(.system(size: 22, weight: .heavy, design: .rounded))
+                        .foregroundStyle(LinearGradient(colors: Theme.brand, startPoint: .leading, endPoint: .trailing))
+                    Text("grabs · \(Stats.savedPhrase(stats.seconds))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 6) {
+                    ForEach(stats.top.prefix(3), id: \.0) { k, n in
+                        HStack(spacing: 4) {
+                            Image(systemName: k.symbol)
+                            Text(n.formatted()).monospacedDigit()
+                        }
+                        .font(.system(size: 10.5, weight: .medium))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        .fixedSize()
+                        .help(k.title)
+                    }
+                }
+                Spacer()
+                Button {
+                    if let img = stats.shareCard() {
+                        Clipboard.write(.image(img, pointSize: CGSize(width: img.width / 2, height: img.height / 2)))
+                        Sound.shared.play(.copy)
+                        withAnimation { copied = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { withAnimation { copied = false } }
+                    }
+                } label: {
+                    Label(copied ? "Copied" : "Share Card", systemImage: copied ? "checkmark" : "square.and.arrow.up")
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .controlSize(.small)
+                .help("Copies a picture of your stats to paste anywhere")
+            }
+        }
     }
 }

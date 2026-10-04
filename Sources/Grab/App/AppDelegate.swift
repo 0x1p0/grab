@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Quartz
 import Carbon.HIToolbox
 import ServiceManagement
@@ -19,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Sound.shared.prepare()
         TempFiles.clear()
+        _ = Stats.shared
 
         overlay = OverlayController()
         session = Session(overlay: overlay)
@@ -121,9 +123,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             quickCopy: settings.quickCopy,
             enabled: !settings.paused && !excluded,
             copyKeyCodes: copyKeyCodes,
-            actionKeyCodes: actionKeyCodes
+            actionKeyCodes: actionKeyCodes,
+            trigger: settings.trigger
         )
         overlay?.applySharing()
+        Updater.shared.applySettings()
         if settings.paused, session?.armed == true {
             keyTap.suppressCurrentHold()
             session.disarm(cancelled: true)
@@ -134,7 +138,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ⏎ and space are fixed; letters follow the keyboard layout like ⌥C does.
     private static func actionKeys() -> [Int64: GrabAction] {
         var keys: [Int64: GrabAction] = [36: .open, 76: .open, 49: .look]
-        let letters: [(String, Int64, GrabAction)] = [("p", 35, .pin), ("s", 1, .speak), ("t", 17, .translate), ("e", 14, .ask), ("z", 6, .undo)]
+        let letters: [(String, Int64, GrabAction)] = [
+            ("p", 35, .pin), ("s", 1, .speak), ("t", 17, .translate), ("e", 14, .ask), ("z", 6, .undo),
+            ("r", 15, .box), ("v", 9, .pasteNext), ("d", 2, .compare), ("f", 3, .fill),
+        ]
         for (letter, ansi, action) in letters {
             for code in KeyLayout.keyCodes(typing: letter, fallback: ansi) { keys[code] = action }
         }
@@ -172,6 +179,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windows.showOnboarding()
     }
 
+    @objc func checkForUpdates() {
+        Task { await Updater.shared.check(userInitiated: true) }
+    }
+
     // MARK: Debug hooks
 
     #if DEBUG
@@ -203,6 +214,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "append": session.copy(append: true)
         case "action": session.debugAction(arg)
         case "mascotstills": MascotDebug.renderStills(to: arg)
+        case "seasonstills": MascotDebug.renderSeasons(to: arg)
+        case "codepic":
+            let sample = "/// Greets someone by name.\nfunc greet(_ name: String) -> String {\n    // Empty names get a plain hello.\n    if name.isEmpty { return \"Hello!\" }\n    let count = 42\n    return \"Hi, \\(name) #\\(count)\"\n}"
+            if let img = CodeImage.render(sample, language: "swift", title: "Greeter.swift", firstLine: 12) {
+                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: arg))
+            }
+        case "windows":
+            let list = NSApp.windows.filter(\.isVisible).map { w -> [String: Any] in
+                let r = ScreenSpace.toAX(w.frame)
+                return ["title": w.title, "frame": [r.minX, r.minY, r.width, r.height].map { Double($0) }, "level": w.level.rawValue]
+            }
+            if let d = try? JSONSerialization.data(withJSONObject: list, options: .prettyPrinted) { try? d.write(to: URL(fileURLWithPath: arg)) }
+        case "pins":
+            let list = Panels.shared.pins.map { p -> [String: Any] in
+                var o: [String: Any] = ["live": p.live, "interval": p.interval, "changed": p.changedAt.map { $0.timeIntervalSince1970 } ?? 0]
+                switch p.content {
+                case .text(let t, _): o["text"] = t
+                case .image(let i, _): o["image"] = [i.width, i.height]; o["print"] = ImageFingerprint.of(i).prefix(16).map { Int($0) }
+                }
+                if let r = p.source?.rect { o["source"] = [r.minX, r.minY, r.width, r.height].map { Double($0) } }
+                return o
+            }
+            if let d = try? JSONSerialization.data(withJSONObject: list, options: .prettyPrinted) { try? d.write(to: URL(fileURLWithPath: arg)) }
+        case "livepins":
+            for p in Panels.shared.pins { p.interval = 2; p.live = arg != "off" }
+        case "customformat":
+            // name|template|text,link
+            let f = arg.components(separatedBy: "|")
+            if f.count >= 3 {
+                let targets = Set(f[f.count - 1].split(separator: ",").compactMap { CustomFormat.Target(rawValue: String($0)) })
+                settings.customFormats.append(CustomFormat(name: f[0], template: f[1..<(f.count - 1)].joined(separator: "|"), targets: targets))
+            } else if arg == "clear" {
+                settings.customFormats = []
+            }
+        case "vaulttest":
+            // A throwaway file and key; the keychain is never touched.
+            History.shared.debugUseVault(HistoryVault(url: URL(fileURLWithPath: arg).appendingPathComponent("History.grabvault"), key: .init(size: .bits256)))
+            settings.keepHistory = true
+            History.shared.setKeepHistory(true)
+        case "historyreload":
+            History.shared.debugReload()
+        case "historydump":
+            let rows = History.shared.items.map { "\($0.mode.title)|\($0.appName ?? "")|\($0.title)" }
+            try? rows.joined(separator: "\n").write(toFile: arg, atomically: true, encoding: .utf8)
+        case "settingsscroll":
+            // Scrolls the settings form to a y offset, for screenshots.
+            func scrollView(in v: NSView) -> NSScrollView? {
+                if let s = v as? NSScrollView { return s }
+                for sub in v.subviews { if let s = scrollView(in: sub) { return s } }
+                return nil
+            }
+            if let w = NSApp.windows.first(where: { $0.title == "Grab Settings" }), let root = w.contentView, let sv = scrollView(in: root) {
+                sv.contentView.scroll(to: NSPoint(x: 0, y: Double(arg) ?? 0))
+                sv.reflectScrolledClipView(sv.contentView)
+            }
+        case "updateinstall":
+            if let r = Updater.shared.available { Task { await Updater.shared.install(r) } }
+        case "updatestate":
+            try? "\(Updater.shared.state) available=\(Updater.shared.available?.version ?? "none")".write(toFile: arg, atomically: true, encoding: .utf8)
+        case "updatefeed":
+            Updater.shared.debugFeed = URL(string: arg)
+            Task { await Updater.shared.check(userInitiated: true) }
+        case "statscard":
+            if let img = Stats.shared.shareCard() {
+                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: arg))
+            }
         case "historystill": HistoryDebug.snapshot(to: arg)
         case "permstill":
             let view = VStack(alignment: .leading, spacing: 18) {

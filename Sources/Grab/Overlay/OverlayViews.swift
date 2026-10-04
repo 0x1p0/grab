@@ -52,7 +52,7 @@ private struct ScopeTagLayer: View {
             }
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-        .animation(targetSpring, value: model.target)
+        .animation(model.boxing ? nil : targetSpring, value: model.target)
         .animation(.easeOut(duration: 0.16), value: show)
     }
 }
@@ -215,7 +215,7 @@ private struct HUDLayer: View {
             }
         }
         .frame(width: geo.size.width, height: geo.size.height)
-        .animation(targetSpring, value: model.target)
+        .animation(model.boxing ? nil : targetSpring, value: model.target)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: show)
     }
 }
@@ -243,7 +243,7 @@ struct HUDView: View {
                             .lineLimit(2)
                     }
                     if model.hints {
-                        HintsRow()
+                        HintsRow(boxing: model.boxing, shelf: !Shelf.shared.items.isEmpty)
                     }
                 }
                 .transition(.blurReplace)
@@ -490,25 +490,45 @@ private struct Keycap: View {
 }
 
 private struct HintsRow: View {
+    var boxing = false
+    var shelf = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 12) {
-                hint(["←", "→"], "type")
-                hint(["↑", "↓"], "area")
-                hint(["⇥"], "format")
-                hint(["C"], "copy")
-                hint(["⇧C"], "shelf")
+            if boxing {
+                HStack(spacing: 12) {
+                    Text("Move to size the box").foregroundStyle(.primary.opacity(0.8))
+                    hint(["←", "→"], "type")
+                    hint(["C"], "copy")
+                    hint(["P"], "pin")
+                    hint(["R"], "done")
+                }
+            } else {
+                HStack(spacing: 12) {
+                    hint(["←", "→"], "type")
+                    hint(["↑", "↓"], "area")
+                    hint(["⇥"], "format")
+                    hint(["C"], "copy")
+                    hint(["⇧C"], "shelf")
+                }
+                HStack(spacing: 8) {
+                    hint(["⏎"], "open")
+                    hint(["␣"], "peek")
+                    hint(["P"], "pin")
+                    hint(["S"], "say")
+                    hint(["T"], "translate")
+                    hint(["E"], "ask")
+                    hint(["Z"], "undo")
+                }
+                .opacity(0.8)
+                HStack(spacing: 8) {
+                    hint(["R"], "box")
+                    hint(["D"], "compare")
+                    hint(["F"], "fill form")
+                    if shelf { hint(["V"], "paste next") }
+                }
+                .opacity(0.8)
             }
-            HStack(spacing: 8) {
-                hint(["⏎"], "open")
-                hint(["␣"], "peek")
-                hint(["P"], "pin")
-                hint(["S"], "say")
-                hint(["T"], "translate")
-                hint(["E"], "ask")
-                hint(["Z"], "undo")
-            }
-            .opacity(0.8)
         }
         .font(.system(size: 10.5))
         .foregroundStyle(.secondary)

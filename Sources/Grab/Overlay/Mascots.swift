@@ -609,6 +609,12 @@ struct MascotLayer: View {
                     .id(fly.id)
                 }
             }
+            if !reduceMotion, let oops = model.oops, geo.frame.contains(oops.at) {
+                TimelineView(.animation) { ctx in
+                    OopsScene(oops: oops, t: ctx.date.timeIntervalSince(oops.start), at: geo.local(oops.at))
+                }
+                .id(oops.id)
+            }
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         .allowsHitTesting(false)
@@ -702,12 +708,18 @@ struct MascotScene: View {
                     .opacity(p.cargoOpacity)
                     .position(x: c.midX, y: c.midY)
             }
-            // The character.
+            // The character, wobbling if the cargo is heavy.
+            let strain = fly.heavy && p.cargoOpacity > 0.6 ? 1.0 : 0
             character(p)
+                .overlay { SeasonHat.on(fly.kind) }
                 .scaleEffect(x: p.scale * p.stretch.width * fly.kind.size, y: p.scale * p.stretch.height * fly.kind.size)
-                .rotationEffect(.degrees(p.tilt))
+                .rotationEffect(.degrees(p.tilt + strain * sin(t * 31) * 6))
+                .offset(y: strain * CGFloat(abs(sin(t * 15))) * 2.5)
                 .opacity(p.opacity)
                 .position(body)
+            if strain > 0 {
+                SweatDrops(t: t).opacity(p.opacity).position(x: body.x + 20 * fly.kind.size, y: body.y - 12 * fly.kind.size)
+            }
             if fly.kind == .snap, p.gripOpacity > 0, !p.grip.isNull {
                 let g = geo.local(p.grip)
                 Pincers(rect: g)
@@ -779,7 +791,7 @@ struct MascotIdle: View {
                     }
                     .frame(width: 50, height: 46)
                 case .clawsy:
-                    ClawHead(open: sin(t * 1.8) * 0.5 + 0.5).scaleEffect(0.8).offset(y: -12)
+                    ClawHead(open: sin(t * 1.8) * 0.5 + 0.5).overlay { SeasonHat.on(.clawsy) }.scaleEffect(0.8).offset(y: -12)
                 case .beamy:
                     Saucer(t: t).rotationEffect(.degrees(sin(t * 1.5) * 6))
                 case .ribbit:
@@ -792,7 +804,160 @@ struct MascotIdle: View {
                     Image(systemName: "moon.zzz.fill").font(.system(size: 24)).foregroundStyle(.secondary)
                 }
             }
+            .overlay { if kind != .clawsy { SeasonHat.on(kind) } }
             .offset(y: kind == .off ? 0 : bob)
+        }
+    }
+}
+
+// MARK: - Reactions
+
+/// Two drops of sweat flicking off a mascot carrying something heavy.
+struct SweatDrops: View {
+    let t: Double
+    var body: some View {
+        ZStack {
+            ForEach(0..<2, id: \.self) { k in
+                let u = (t * 2.2 + Double(k) * 0.5).truncatingRemainder(dividingBy: 1)
+                Drop()
+                    .fill(LinearGradient(colors: [Color(red: 0.75, green: 0.95, blue: 1), Color(red: 0.35, green: 0.75, blue: 1)],
+                                         startPoint: .top, endPoint: .bottom))
+                    .frame(width: 5, height: 7)
+                    .offset(x: CGFloat(u) * 9 + CGFloat(k) * 3, y: CGFloat(u * u) * 12 - CGFloat(k) * 6)
+                    .opacity(1 - u)
+            }
+        }
+    }
+
+    struct Drop: Shape {
+        func path(in r: CGRect) -> Path {
+            var p = Path()
+            p.move(to: CGPoint(x: r.midX, y: r.minY))
+            p.addCurve(to: CGPoint(x: r.midX, y: r.maxY), control1: CGPoint(x: r.maxX + r.width * 0.2, y: r.midY + r.height * 0.1),
+                       control2: CGPoint(x: r.maxX, y: r.maxY))
+            p.addCurve(to: CGPoint(x: r.midX, y: r.minY), control1: CGPoint(x: r.minX, y: r.maxY),
+                       control2: CGPoint(x: r.minX - r.width * 0.2, y: r.midY + r.height * 0.1))
+            return p
+        }
+    }
+}
+
+/// When a grab fails, the mascot pops up by the pointer, shakes its head and shrugs a "?".
+struct OopsScene: View {
+    let oops: Oops
+    let t: Double
+    let at: CGPoint
+
+    var body: some View {
+        let pop = t < 0.22 ? Choreo.spring(t / 0.22) : 1
+        let fade = 1 - Choreo.ramp(t, 0.95, 0.25)
+        let shake = sin(t * 24) * 11 * (1 - Choreo.ramp(t, 0.25, 0.6)) * Choreo.ramp(t, 0.12, 0.08)
+        ZStack {
+            MascotIdle(kind: oops.kind)
+                .scaleEffect(0.82 * pop)
+                .rotationEffect(.degrees(shake))
+            if oops.kind == .ribbit {
+                // Ptooey.
+                let u = Choreo.ramp(t, 0.3, 0.45)
+                Circle().fill(Color(red: 1, green: 0.45, blue: 0.58))
+                    .frame(width: 5, height: 5)
+                    .offset(x: 10 + CGFloat(u) * 26, y: 4 - CGFloat(sin(u * .pi)) * 14 + CGFloat(u) * 10)
+                    .opacity(u > 0 && u < 1 ? 1 : 0)
+            }
+            Text("?")
+                .font(.system(size: 13, weight: .heavy, design: .rounded))
+                .foregroundStyle(Color(hex: 0xEC4F7C))
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(.white).shadow(color: .black.opacity(0.25), radius: 3, y: 1))
+                .scaleEffect(Choreo.spring(Choreo.ramp(t, 0.15, 0.25)))
+                .offset(x: 24, y: -26)
+        }
+        .opacity(fade)
+        .position(x: at.x + 40, y: at.y - 34)
+    }
+}
+
+// MARK: - Seasons
+
+/// Mascots dress up a little around Halloween and the winter holidays.
+enum Season: String, CaseIterable {
+    case halloween, winter, newYear
+
+    static func current(_ date: Date = Date()) -> Season? {
+        guard Settings.shared.seasonal else { return nil }
+        #if DEBUG
+        if let o = MascotDebug.seasonOverride { return o }
+        #endif
+        let c = Calendar.current.dateComponents([.month, .day], from: date)
+        switch (c.month ?? 0, c.day ?? 0) {
+        case (10, 24...31), (11, 1): return .halloween
+        case (12, 13...30): return .winter
+        case (12, 31), (1, 1...2): return .newYear
+        default: return nil
+        }
+    }
+}
+
+struct SeasonHat: View {
+    let season: Season
+
+    /// The current season's hat, sitting on `kind`'s head (nothing out of season).
+    @ViewBuilder static func on(_ kind: MascotKind) -> some View {
+        if let season = Season.current(), let spot = spot(for: kind) {
+            SeasonHat(season: season).rotationEffect(.degrees(spot.tilt)).offset(spot.offset)
+        }
+    }
+
+    private static func spot(for kind: MascotKind) -> (offset: CGSize, tilt: Double)? {
+        switch kind {
+        case .snap: (CGSize(width: -5, height: -21), -10)
+        case .clawsy: (CGSize(width: 0, height: -18), 0)
+        case .beamy: (CGSize(width: 0, height: -19), 6)
+        case .ribbit: (CGSize(width: 0, height: -27), -6)
+        case .classic, .off: nil
+        }
+    }
+
+    var body: some View {
+        switch season {
+        case .halloween:
+            ZStack(alignment: .bottom) {
+                Ellipse().fill(Color(hex: 0x2B1740)).frame(width: 26, height: 6)
+                HatCone(bend: 0.35).fill(Color(hex: 0x3A1F57)).frame(width: 15, height: 17).offset(y: -3)
+                Rectangle().fill(Color(hex: 0xFF8A3D)).frame(width: 13, height: 2.5).offset(y: -4)
+            }
+            .frame(width: 26, height: 22)
+        case .winter:
+            ZStack(alignment: .bottom) {
+                HatCone(bend: 0.55).fill(Color(hex: 0xE5303F)).frame(width: 18, height: 18).offset(y: -3)
+                Circle().fill(.white).frame(width: 6, height: 6).offset(x: 9, y: -17)
+                Capsule().fill(.white).frame(width: 21, height: 6)
+            }
+            .frame(width: 26, height: 24)
+        case .newYear:
+            ZStack(alignment: .bottom) {
+                HatCone(bend: 0).fill(LinearGradient(colors: Theme.brand, startPoint: .bottomLeading, endPoint: .topTrailing))
+                    .frame(width: 14, height: 18)
+                    .overlay(alignment: .bottom) {
+                        Capsule().fill(Color.white.opacity(0.85)).frame(width: 11, height: 2).offset(y: -5)
+                    }
+                Circle().fill(Color(hex: 0xFFD166)).frame(width: 5, height: 5).offset(y: -18)
+            }
+            .frame(width: 20, height: 24)
+        }
+    }
+
+    /// A cone whose tip flops over by `bend`.
+    struct HatCone: Shape {
+        var bend: CGFloat
+        func path(in r: CGRect) -> Path {
+            var p = Path()
+            let tip = CGPoint(x: r.midX + r.width * bend, y: r.minY + r.height * bend * 0.3)
+            p.move(to: CGPoint(x: r.minX, y: r.maxY))
+            p.addQuadCurve(to: tip, control: CGPoint(x: r.minX + r.width * 0.3, y: r.minY + r.height * 0.2))
+            p.addQuadCurve(to: CGPoint(x: r.maxX, y: r.maxY), control: CGPoint(x: r.maxX - r.width * 0.1, y: r.midY))
+            p.closeSubpath()
+            return p
         }
     }
 }
@@ -800,6 +965,44 @@ struct MascotIdle: View {
 #if DEBUG
 /// Renders each mascot's trip offscreen into PNG frames (debug hook `mascotstills:<dir>`).
 enum MascotDebug {
+    nonisolated(unsafe) static var seasonOverride: Season?
+
+    /// Every mascot in every season's hat, plus the oops and heavy poses (`seasonstills:<dir>`).
+    @MainActor
+    static func renderSeasons(to dir: String) {
+        let kinds: [MascotKind] = [.snap, .clawsy, .beamy, .ribbit]
+        for season in [nil] + Season.allCases.map(Optional.some) {
+            seasonOverride = season
+            let view = HStack(spacing: 30) {
+                ForEach(kinds) { k in MascotIdle(kind: k).frame(width: 90, height: 100) }
+            }
+            .padding(30)
+            .background(Color(white: 0.93))
+            let r = ImageRenderer(content: view)
+            r.scale = 2
+            if let img = r.cgImage {
+                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: "\(dir)/season_\(season?.rawValue ?? "none").png"))
+            }
+        }
+        seasonOverride = nil
+        for k in kinds {
+            let frames = HStack(spacing: 10) {
+                ForEach([0.1, 0.3, 0.5, 0.8], id: \.self) { t in
+                    OopsScene(oops: Oops(at: CGPoint(x: 30, y: 90), kind: k), t: t, at: CGPoint(x: 30, y: 90))
+                        .frame(width: 140, height: 120)
+                        .background(Color(white: 0.9))
+                }
+            }
+            let r = ImageRenderer(content: frames)
+            r.scale = 2
+            if let img = r.cgImage {
+                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: "\(dir)/oops_\(k.rawValue).png"))
+            }
+        }
+    }
+
     @MainActor
     static func renderStills(to dir: String) {
         let size = CGSize(width: 1200, height: 640)

@@ -1,0 +1,65 @@
+name: Release
+
+# Push a tag like v1.2.0 to build, sign, notarize and publish a release.
+#
+# Needs these repository secrets (Settings → Secrets and variables → Actions):
+#   DEVELOPER_ID_P12           your "Developer ID Application" certificate + key, exported as .p12, base64-encoded
+#   DEVELOPER_ID_P12_PASSWORD  the password you gave the .p12
+#   NOTARY_KEY_P8              an App Store Connect API key (.p8), base64-encoded
+#   NOTARY_KEY_ID              that key's ID
+#   NOTARY_ISSUER              your App Store Connect issuer ID
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Use the newest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+
+      - name: Import the signing certificate
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          PASS=$(uuidgen)
+          security create-keychain -p "$PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASS" "$KEYCHAIN"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Notary key
+        env:
+          KEY: ${{ secrets.NOTARY_KEY_P8 }}
+        run: echo "$KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+
+      - name: Build, sign and notarize
+        env:
+          NOTARY_KEY: ${{ runner.temp }}/notary.p8
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: scripts/release.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/Grab-*.dmg dist/Grab-*.zip \
+            --title "Grab ${GITHUB_REF_NAME#v}" --generate-notes
+          echo "Homebrew cask:" && cat dist/grab.rb
