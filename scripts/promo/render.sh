@@ -1,5 +1,5 @@
 #!/bin/bash
-# Renders promo/Grab-promo.mp4: 30 s, 1920×1080 at 60 fps, with its synthesized soundtrack.
+# Renders promo/Grab-promo.mp4: about 54 s, 1920×1080 at 60 fps, with its synthesized soundtrack.
 #   scripts/promo/render.sh            full video
 #   scripts/promo/render.sh --stills 4.5 12 20   PNG stills (seconds) into promo/stills
 set -euo pipefail

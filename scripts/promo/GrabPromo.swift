@@ -1,7 +1,7 @@
-// Renders Grab's 30-second promo: 1920×1080 at 60 fps, every frame drawn with SwiftUI
+// Renders Grab's promo (about 54 seconds): 1920×1080 at 60 fps, every frame drawn with SwiftUI
 // from a timeline, plus a soundtrack synthesized to match. See render.sh.
 //
-//   GrabPromo out.mp4                 full render (needs ffmpeg)
+//   GrabPromo out.mp4 [crf]           full render (needs ffmpeg; crf defaults to 18)
 //   GrabPromo --stills dir t1 t2 …    PNG stills at the given seconds, for checking
 //   GrabPromo --audio out.wav         soundtrack only
 
@@ -13,7 +13,10 @@ import SwiftUI
 let W: CGFloat = 1920
 let H: CGFloat = 1080
 let FPS = 60
-let DURATION = 30.0
+let DURATION = 53.6
+/// The action keys and the outro were laid out for 23.4 s and 27.2 s; the scenes added
+/// for boxes, forms, compare, live pins and "make it yours" push them this much later.
+let SHIFT = 23.6
 
 // MARK: - Motion helpers
 
@@ -55,11 +58,12 @@ struct RGB {
 }
 
 enum Mode: Int {
-    case text, link, qr, file, image, color, code
+    case text, link, qr, file, image, color, code, ocr
 
     var pair: (RGB, RGB) {
         switch self {
         case .text, .code: (RGB(0x2F7BFF), RGB(0x22C3EE))
+        case .ocr: (RGB(0x22C3EE), RGB(0x7C5CFF))
         case .link: (RGB(0x7C5CFF), RGB(0xD946EF))
         case .qr: (RGB(0x10B981), RGB(0x84CC16))
         case .file: (RGB(0x0EA5E9), RGB(0x6366F1))
@@ -77,6 +81,7 @@ enum Mode: Int {
         case .file: "doc.fill"
         case .image: "photo"
         case .color: "eyedropper.halffull"
+        case .ocr: "text.viewfinder"
         }
     }
     var title: String {
@@ -88,6 +93,7 @@ enum Mode: Int {
         case .file: "File"
         case .image: "Image"
         case .color: "Color"
+        case .ocr: "OCR"
         }
     }
 }
@@ -472,9 +478,10 @@ struct ToastCard: View {
     var detail: String
     var colors: [Color]
     var progress: Double
+    var width: CGFloat = 480
 
     var body: some View {
-        HUDCard(width: 480) {
+        HUDCard(width: width) {
             HStack(spacing: 15) {
                 ZStack {
                     Circle().fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -617,6 +624,389 @@ struct WindowChrome<Content: View>: View {
         .overlay(shape.strokeBorder(Color.white.opacity(dark ? 0.12 : 0.6), lineWidth: 1))
         .shadow(color: .black.opacity(0.55), radius: 50, y: 30)
         .position(x: rect.midX, y: rect.midY)
+    }
+}
+
+// MARK: - Mascots (drawn like the app's, at video scale)
+
+let snapGradient = [Color(red: 1, green: 0.70, blue: 0.50), Color(red: 0.93, green: 0.42, blue: 0.50), Color(red: 0.55, green: 0.36, blue: 0.96)]
+
+/// Where a mascot looks, whether it blinks, how open its mouth is, how puffed its cheeks are.
+struct Face {
+    var look = CGVector(dx: 0, dy: 0)
+    var blink = 0.0
+    var mouth = 0.0
+    var puff = 0.0
+}
+
+struct MascotEye: View {
+    var size: CGFloat
+    var look: CGVector
+    var blink: Double
+    var body: some View {
+        ZStack {
+            Ellipse().fill(Color.white)
+            Circle().fill(Color(red: 0.12, green: 0.08, blue: 0.2))
+                .frame(width: size * 0.56, height: size * 0.56)
+                .offset(x: look.dx * size * 0.17, y: look.dy * size * 0.2)
+            Circle().fill(Color.white).frame(width: size * 0.18, height: size * 0.18)
+                .offset(x: look.dx * size * 0.17 - size * 0.1, y: look.dy * size * 0.2 - size * 0.12)
+        }
+        .frame(width: size, height: size * 1.18)
+        .scaleEffect(x: 1, y: 1 - 0.9 * blink)
+    }
+}
+
+struct SmileShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.addQuadCurve(to: CGPoint(x: r.maxX, y: r.minY), control: CGPoint(x: r.midX, y: r.maxY + r.height))
+        return p
+    }
+}
+
+/// Snap: a jelly bean in Grab's colors with a sparkle antenna. Drawn at the app's size; scale it up.
+struct SnapBody: View {
+    var face: Face
+    var t: Double
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 15, style: .continuous)
+        let mouthColor = Color(red: 0.3, green: 0.05, blue: 0.2)
+        ZStack {
+            shape.fill(LinearGradient(colors: snapGradient, startPoint: .topLeading, endPoint: .bottomTrailing))
+                .shadow(color: snapGradient[1].opacity(0.7), radius: 9, y: 3)
+            Ellipse().fill(Color.white.opacity(0.45)).frame(width: 12, height: 7).offset(x: -8, y: -10).rotationEffect(.degrees(-20))
+            HStack(spacing: 3) {
+                MascotEye(size: 10, look: face.look, blink: face.blink)
+                MascotEye(size: 10, look: face.look, blink: face.blink)
+            }
+            .offset(y: -2)
+            Group {
+                if face.mouth > 0.3 {
+                    Ellipse().fill(mouthColor).frame(width: 5, height: 5 * face.mouth + 1)
+                } else {
+                    SmileShape().stroke(mouthColor, style: StrokeStyle(lineWidth: 1.6, lineCap: .round)).frame(width: 8, height: 3)
+                }
+            }
+            .offset(y: 8)
+            VStack(spacing: 0) {
+                SparkleShape().fill(Color(red: 1, green: 0.95, blue: 0.82)).frame(width: 9, height: 9)
+                    .shadow(color: .white, radius: 3)
+                    .rotationEffect(.degrees(sin(t * 9) * 18))
+                Capsule().fill(snapGradient[0]).frame(width: 2, height: 6)
+            }
+            .offset(x: 6 + sin(t * 7) * 1.5, y: -20)
+        }
+        .frame(width: 36, height: 32)
+    }
+}
+
+/// Snap's hands: the four corners of the viewfinder, around whatever it holds.
+struct Pincers: View {
+    var rect: CGSize
+    var lineWidth: CGFloat = 3.6
+    var maxArm: CGFloat = 15
+    var body: some View {
+        let arm = max(5, min(maxArm, min(rect.width, rect.height) * 0.32))
+        let box = arm + lineWidth / 2 + 1
+        ZStack(alignment: .topLeading) {
+            ForEach(0..<4, id: \.self) { i in
+                CornerShape(arm: arm, radius: min(arm * 0.45, 5 * lineWidth / 3.6))
+                    .stroke(Color.white, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+                    .frame(width: box, height: box)
+                    .rotationEffect(.degrees(Double(i) * 90))
+                    .shadow(color: snapGradient[1].opacity(0.9), radius: lineWidth * 1.1)
+                    .position(corner(i, box))
+            }
+        }
+        .frame(width: rect.width, height: rect.height, alignment: .topLeading)
+    }
+
+    func corner(_ i: Int, _ box: CGFloat) -> CGPoint {
+        let h = box / 2
+        switch i {
+        case 0: return CGPoint(x: h, y: h)
+        case 1: return CGPoint(x: rect.width - h, y: h)
+        case 2: return CGPoint(x: rect.width - h, y: rect.height - h)
+        default: return CGPoint(x: h, y: rect.height - h)
+        }
+    }
+}
+
+/// Clawsy's head: a shiny hub with two hooked fingers.
+struct ClawHead: View {
+    var open: Double
+    var body: some View {
+        let metal = LinearGradient(colors: [Color(white: 0.98), Color(white: 0.55), Color(white: 0.85)], startPoint: .leading, endPoint: .trailing)
+        ZStack {
+            ForEach([-1.0, 1.0], id: \.self) { side in
+                ClawFinger(side: side, open: open)
+                    .stroke(Color.black.opacity(0.35), style: StrokeStyle(lineWidth: 4.4, lineCap: .round, lineJoin: .round))
+                    .offset(x: 0.6, y: 1)
+                ClawFinger(side: side, open: open)
+                    .stroke(metal, style: StrokeStyle(lineWidth: 3.4, lineCap: .round, lineJoin: .round))
+            }
+            ZStack {
+                Capsule().fill(LinearGradient(colors: [Color(white: 0.98), Color(white: 0.55)], startPoint: .top, endPoint: .bottom))
+                Capsule().strokeBorder(LinearGradient(colors: snapGradient, startPoint: .leading, endPoint: .trailing), lineWidth: 2.4)
+                Capsule().fill(Color.white.opacity(0.85)).frame(width: 9, height: 3).offset(x: -4, y: -4)
+            }
+            .frame(width: 26, height: 16)
+            .shadow(color: .black.opacity(0.35), radius: 3, y: 2)
+        }
+        .frame(width: 64, height: 84)
+    }
+}
+
+struct ClawFinger: Shape {
+    var side: Double
+    var open: Double
+    func path(in r: CGRect) -> Path {
+        let s = CGFloat(side)
+        let pivot = CGPoint(x: r.midX + 9 * s, y: r.midY + 5)
+        let a = -s * open * 0.6
+        func rot(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            let c = CGFloat(cos(a)), n = CGFloat(sin(a))
+            return CGPoint(x: pivot.x + x * c - y * n, y: pivot.y + x * n + y * c)
+        }
+        var p = Path()
+        p.move(to: pivot)
+        p.addCurve(to: rot(14 * s, 18), control1: rot(9 * s, 1), control2: rot(15 * s, 8))
+        p.addQuadCurve(to: rot(7 * s, 30), control: rot(14 * s, 27))
+        return p
+    }
+}
+
+/// Beamy's saucer.
+struct Saucer: View {
+    var t: Double
+    var body: some View {
+        let dark = Color(red: 0.1, green: 0.1, blue: 0.2)
+        ZStack {
+            Ellipse().fill(LinearGradient(colors: [Color(red: 0.7, green: 0.95, blue: 1).opacity(0.85), Color(red: 0.35, green: 0.75, blue: 0.95).opacity(0.6)],
+                                          startPoint: .top, endPoint: .bottom))
+                .frame(width: 22, height: 18).offset(y: -7)
+                .overlay(HStack(spacing: 2) { Circle().fill(dark).frame(width: 3, height: 3); Circle().fill(dark).frame(width: 3, height: 3) }.offset(y: -8))
+            Ellipse().fill(LinearGradient(colors: [snapGradient[2], snapGradient[1]], startPoint: .leading, endPoint: .trailing))
+                .frame(width: 46, height: 14)
+                .overlay(Ellipse().strokeBorder(Color.white.opacity(0.4), lineWidth: 1))
+                .shadow(color: snapGradient[2].opacity(0.7), radius: 6)
+            HStack(spacing: 7) {
+                ForEach(0..<3, id: \.self) { i in
+                    let glow: Double = 0.4 + 0.6 * (sin(t * 22 + Double(i) * 2) * 0.5 + 0.5)
+                    Circle().fill(Color(red: 1, green: 0.9, blue: 0.4).opacity(glow)).frame(width: 4, height: 4)
+                }
+            }
+            .offset(y: 2)
+        }
+        .frame(width: 50, height: 34)
+    }
+}
+
+/// Ribbit's head and cheeks.
+struct FrogBody: View {
+    var face: Face
+    var body: some View {
+        let green = [Color(red: 0.45, green: 0.9, blue: 0.5), Color(red: 0.1, green: 0.62, blue: 0.32)]
+        let cheek = Color(red: 1, green: 0.5, blue: 0.6).opacity(0.55)
+        let p = CGFloat(face.puff)
+        ZStack {
+            Ellipse().fill(LinearGradient(colors: green, startPoint: .top, endPoint: .bottom))
+                .frame(width: 40 + 6 * p, height: 28 + 3 * p)
+                .shadow(color: green[1].opacity(0.6), radius: 6, y: 2)
+            HStack(spacing: 10) {
+                ForEach(0..<2, id: \.self) { _ in
+                    ZStack {
+                        Circle().fill(LinearGradient(colors: green, startPoint: .top, endPoint: .bottom)).frame(width: 15, height: 15)
+                        MascotEye(size: 10, look: face.look, blink: face.blink).offset(y: -1)
+                    }
+                }
+            }
+            .offset(y: -13)
+            HStack(spacing: 18 + 4 * p) {
+                Ellipse().fill(cheek).frame(width: 7 + 6 * p, height: 4 + 4 * p)
+                Ellipse().fill(cheek).frame(width: 7 + 6 * p, height: 4 + 4 * p)
+            }
+            .offset(y: 4)
+            SmileShape().stroke(Color(red: 0.08, green: 0.3, blue: 0.15), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                .frame(width: 16, height: 3)
+                .offset(y: 7)
+        }
+        .frame(width: 52, height: 46)
+    }
+}
+
+/// A Halloween hat, for the seasonal outfits.
+struct WitchHat: View {
+    struct Cone: Shape {
+        func path(in r: CGRect) -> Path {
+            var p = Path()
+            let tip = CGPoint(x: r.midX + r.width * 0.35, y: r.minY + r.height * 0.1)
+            p.move(to: CGPoint(x: r.minX, y: r.maxY))
+            p.addQuadCurve(to: tip, control: CGPoint(x: r.minX + r.width * 0.3, y: r.minY + r.height * 0.2))
+            p.addQuadCurve(to: CGPoint(x: r.maxX, y: r.maxY), control: CGPoint(x: r.maxX - r.width * 0.1, y: r.midY))
+            p.closeSubpath()
+            return p
+        }
+    }
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Ellipse().fill(RGB(0x2B1740).c()).frame(width: 26, height: 6)
+            Cone().fill(RGB(0x3A1F57).c()).frame(width: 15, height: 17).offset(y: -3)
+            Rectangle().fill(RGB(0xFF8A3D).c()).frame(width: 13, height: 2.5).offset(y: -4)
+        }
+        .frame(width: 26, height: 22)
+    }
+}
+
+enum Mascot: Int, CaseIterable {
+    case snap, clawsy, beamy, ribbit
+    var title: String { ["Snap", "Clawsy", "Beamy", "Ribbit"][rawValue] }
+    /// Where the hat sits, at the app's size.
+    var hatSpot: (CGSize, Double) {
+        switch self {
+        case .snap: (CGSize(width: -5, height: -21), -10)
+        case .clawsy: (CGSize(width: 0, height: -18), 0)
+        case .beamy: (CGSize(width: 0, height: -19), 6)
+        case .ribbit: (CGSize(width: 0, height: -27), -6)
+        }
+    }
+}
+
+/// A mascot idling in place, like the app's picker, with an optional hat (0…1 pops it on).
+struct MascotIdleView: View {
+    var kind: Mascot
+    var t: Double
+    var hat: Double = 0
+
+    var body: some View {
+        let bob = CGFloat(sin(t * 2.6) * 2.5)
+        let blink: Double = (t.truncatingRemainder(dividingBy: 3.2)) < 0.12 ? 1 : 0
+        let face = Face(look: CGVector(dx: sin(t * 0.9) * 0.6, dy: 0.1), blink: blink, mouth: 0, puff: max(0, sin(t * 1.3)) * 0.6)
+        let spot = kind.hatSpot
+        let hatView = WitchHat()
+            .scaleEffect(spring(hat))
+            .opacity(clamp(hat * 3))
+            .rotationEffect(.degrees(spot.1))
+            .offset(spot.0)
+        Group {
+            switch kind {
+            case .snap:
+                ZStack {
+                    Pincers(rect: CGSize(width: 50, height: 46)).opacity(0.9)
+                    SnapBody(face: face, t: t).scaleEffect(0.95).overlay { hatView }
+                }
+                .frame(width: 50, height: 46)
+            case .clawsy:
+                ClawHead(open: sin(t * 1.8) * 0.5 + 0.5).overlay { hatView }.scaleEffect(0.8).offset(y: -12)
+            case .beamy:
+                Saucer(t: t).overlay { hatView }.rotationEffect(.degrees(sin(t * 1.5) * 6))
+            case .ribbit:
+                FrogBody(face: face).overlay { hatView }
+            }
+        }
+        .offset(y: bob)
+    }
+}
+
+/// The card a mascot carries: a tiny preview of the grab.
+struct CargoCard: View {
+    var text: String
+    var colors: [Color]
+    var size: CGSize
+    var body: some View {
+        let s = min(size.width, size.height)
+        let shape = RoundedRectangle(cornerRadius: min(22, s * 0.22), style: .continuous)
+        ZStack {
+            shape.fill(Color(white: 0.985))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Aa").font(.system(size: max(4, s * 0.32), weight: .heavy, design: .rounded))
+                    .foregroundStyle(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+                Text(text).font(.system(size: max(3, s * 0.17), weight: .medium)).foregroundStyle(.black.opacity(0.7)).lineLimit(2)
+            }
+            .padding(max(1, s * 0.1))
+            .frame(width: max(1, size.width), height: max(1, size.height), alignment: .topLeading)
+            .clipShape(shape)
+            shape.strokeBorder(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: max(1, s * 0.03))
+        }
+        .frame(width: max(1, size.width), height: max(1, size.height))
+        .shadow(color: (colors.first ?? .black).opacity(0.45), radius: 10, y: 4)
+    }
+}
+
+func bezier(_ p0: CGPoint, _ c: CGPoint, _ p1: CGPoint, _ u: Double) -> CGPoint {
+    let v = CGFloat(1 - u), w = CGFloat(u)
+    let x: CGFloat = v * v * p0.x + 2 * v * w * c.x + w * w * p1.x
+    let y: CGFloat = v * v * p0.y + 2 * v * w * c.y + w * w * p1.y
+    return CGPoint(x: x, y: y)
+}
+
+func lerpP(_ a: CGPoint, _ b: CGPoint, _ x: Double) -> CGPoint { CGPoint(x: lerp(a.x, b.x, x), y: lerp(a.y, b.y, x)) }
+
+/// Snap's trip, as in the app: it pops up on the grab, clamps it into a card with its
+/// viewfinder hands, hops up to the menu bar icon and dives in. `t` is seconds since the copy.
+struct SnapTrip: View {
+    var t: Double
+    var source: CGRect
+    var icon: CGPoint
+    var text: String
+    /// Video scale: the app's Snap is drawn this many times bigger.
+    var k: CGFloat = 2.3
+
+    var body: some View {
+        let p0 = CGPoint(x: source.midX, y: source.midY)
+        let pop = spring(ramp(t, 0, 0.32))
+        let clampIn = easeInOut(ramp(t, 0.12, 0.3))
+        let hop = easeInOut(ramp(t, 0.42, 0.55))
+        let dive = easeIn(ramp(t, 0.92, 0.2))
+        let rest = CGPoint(x: p0.x, y: p0.y - 22 * k)
+        let ctrl = CGPoint(x: p0.x + (icon.x - p0.x) * 0.45, y: min(p0.y, icon.y) - 90 * k)
+        let flying = hop > 0 ? bezier(rest, ctrl, icon, hop) : rest
+        let body = lerpP(flying, icon, dive)
+        let scale = CGFloat(pop * (1 - 0.82 * dive))
+        let squash = sin(.pi * ramp(t, 0.32, 0.12)) * 0.16
+        let speed = sin(.pi * hop)
+        let stretchW = CGFloat(1 + squash - 0.07 * speed), stretchH = CGFloat(1 - squash + 0.11 * speed)
+        let ahead = bezier(rest, ctrl, icon, min(1, hop + 0.02))
+        let tilt = hop > 0 && hop < 1 ? Double(atan2(ahead.y - flying.y, ahead.x - flying.x)) * 180 / .pi * 0.18 * speed : 0
+        let target = hop > 0 ? icon : p0
+        let dx = Double(target.x - body.x), dy = Double(target.y - body.y)
+        let len = max(1, (dx * dx + dy * dy).squareRoot())
+        let face = Face(look: CGVector(dx: dx / len, dy: dy / len), blink: t > 0.64 && t < 0.72 ? 1 : 0, mouth: sin(.pi * ramp(t, 0.18, 0.32)))
+        let carry = 41 * k * scale
+        let cardSize = CGSize(width: 54 * k * max(scale, 0.01), height: 38 * k * max(scale, 0.01))
+        let held = CGRect(x: body.x - cardSize.width / 2, y: body.y + carry - cardSize.height / 2, width: cardSize.width, height: cardSize.height)
+        let restCard = CGRect(x: rest.x - 27 * k, y: rest.y + 41 * k - 19 * k, width: 54 * k, height: 38 * k)
+        let cargo = clampIn < 1 ? lerp(source, restCard, clampIn) : held
+        let cargoOpacity = ramp(t, 0.1, 0.1) * (1 - ramp(t, 1.0, 0.12))
+        let gripOpacity = ramp(t, 0.02, 0.12) * (1 - ramp(t, 0.98, 0.1))
+        let opacity = 1 - ramp(t, 1.04, 0.1)
+        ZStack(alignment: .topLeading) {
+            if hop > 0.05 && hop < 0.98 {
+                ForEach(1...5, id: \.self) { j in
+                    let pt = bezier(rest, ctrl, icon, max(0, hop - Double(j) * 0.045))
+                    SparkleShape().fill(Color.white.opacity(0.85 - Double(j) * 0.15))
+                        .frame(width: CGFloat(20 - j * 2), height: CGFloat(20 - j * 2))
+                        .shadow(color: snapGradient[1], radius: 6)
+                        .position(pt)
+                }
+            }
+            CargoCard(text: text, colors: Mode.text.colors, size: cargo.size)
+                .rotationEffect(.degrees(tilt * 0.6))
+                .opacity(cargoOpacity)
+                .position(x: cargo.midX, y: cargo.midY)
+            Pincers(rect: cargo.insetBy(dx: -4 * k, dy: -4 * k).size, lineWidth: 3.6 * k, maxArm: 15 * k)
+                .rotationEffect(.degrees(tilt * 0.6))
+                .opacity(gripOpacity)
+                .position(x: cargo.midX, y: cargo.midY)
+            SnapBody(face: face, t: t)
+                .scaleEffect(x: k * scale * stretchW, y: k * scale * stretchH)
+                .rotationEffect(.degrees(tilt))
+                .opacity(opacity)
+                .position(body)
+        }
+        .frame(width: W, height: H, alignment: .topLeading)
     }
 }
 
@@ -901,23 +1291,10 @@ struct HowItWorksScene: View {
             .opacity(easeOut(ramp(t, 3.85, 0.3)))
     }
 
+    /// Snap carries the copy up to the menu bar, as in the app.
     var fly: some View {
-        let f = ramp(t, 6.62, 0.8)
-        let from = CGPoint(x: S2.p1Rect.midX, y: S2.p1Rect.midY)
-        let to = S2.menuIcon
-        let ctrl = CGPoint(x: from.x + (to.x - from.x) * 0.35, y: min(from.y, to.y) - 120)
-        let u = easeInOut(f)
-        let p = CGPoint(x: (1 - u) * (1 - u) * from.x + 2 * (1 - u) * u * ctrl.x + u * u * to.x,
-                        y: (1 - u) * (1 - u) * from.y + 2 * (1 - u) * u * ctrl.y + u * u * to.y)
-        let scale = f < 0.12 ? 0.6 + f / 0.12 * 0.5 : 1.1 - 0.75 * f
-        return Circle()
-            .fill(LinearGradient(colors: Mode.text.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: 46, height: 46)
-            .overlay(Image(systemName: Mode.text.symbol).font(.system(size: 20, weight: .bold)).foregroundStyle(.white))
-            .shadow(color: Mode.text.colors[0].opacity(0.6), radius: 12, y: 4)
-            .scaleEffect(scale)
-            .position(p)
-            .opacity(f > 0 && f < 1 ? (f > 0.85 ? (1 - f) / 0.15 : 1) : 0)
+        SnapTrip(t: t - 6.36, source: S2.p1Rect, icon: CGPoint(x: S2.menuIcon.x, y: S2.menuIcon.y + 2), text: "Great work rarely comes from doing more")
+            .opacity(t > 6.36 && t < 7.62 ? 1 : 0)
     }
 }
 
@@ -1201,7 +1578,7 @@ struct PrecisionScene: View {
         return HUDCard(width: 500) {
             ModeBar(modes: [.code, .image, .color], selected: .code)
             PreviewRow(content: .snippet(previews[i].0, previews[i].1), mode: .code)
-            FormatBar(formats: ["Code", "Markdown", "file:line", "GitHub"], selected: 0, colors: Mode.code.colors)
+            FormatBar(formats: ["Code", "Markdown", "GitHub", "Picture"], selected: 0, colors: Mode.code.colors)
         }
     }
 
@@ -1317,7 +1694,728 @@ struct SmartScene: View {
     }
 }
 
-// MARK: - Scene 6 · Actions (23.4 – 27.2)
+// MARK: - Shared bits for the new scenes
+
+/// A key press: down for a moment around `at`.
+func press(_ t: Double, _ at: Double) -> Double { ramp(t, at - 0.06, 0.06) * (1 - ramp(t, at + 0.12, 0.12)) }
+/// The white flash on the border when something is copied at `at`.
+func flash(_ t: Double, _ at: Double) -> Double { (1 - ramp(t, at, 0.5)) * ramp(t, at - 0.02, 0.02) }
+
+/// A key with what it does, lit once it's been pressed.
+struct KeyHint: View {
+    var key: String
+    var label: String
+    var t: Double
+    var at: Double
+    var colors: [Color] = brand.map { $0.c() }
+    var size: CGFloat = 54
+    var body: some View {
+        let lit = easeOut(ramp(t, at - 0.06, 0.2))
+        HStack(spacing: 14) {
+            Keycap(label: key, size: size, pressed: press(t, at), lit: lit, colors: colors)
+            Text(label).font(.system(size: 24, weight: .semibold)).foregroundStyle(.white.opacity(0.4 + 0.55 * lit))
+        }
+    }
+}
+
+/// A floating label in Grab's HUD style, above a target.
+struct TagAbove: View {
+    var label: String
+    var rect: CGRect
+    var colors: [Color]
+    var dots = 3
+    var index = 1
+    var body: some View {
+        ScopeTag(label: label, colors: colors, dots: dots, index: index).at(rect.minX, rect.minY - 46)
+    }
+}
+
+// MARK: - Scene 6 · Draw a box (23.4 – 28.4)
+
+enum S6 {
+    static let start = 23.4, end = 28.4
+    static let win = CGRect(x: 250, y: 92, width: 1420, height: 770)
+    static let slide = CGRect(x: 270, y: 168, width: 1380, height: 600)
+    static let lines: [(text: String, size: CGFloat, weight: NSFont.Weight, color: RGB)] = [
+        ("Ship small. Ship often.", 74, .bold, RGB(0xFFFFFF)),
+        ("12 launches this quarter · demos every Friday", 34, .medium, RGB(0xFFB86C)),
+        ("Fewer meetings. More shipping.", 34, .medium, RGB(0xC4A7FF)),
+    ]
+    static let textX: CGFloat = 392
+    static let lineY: [CGFloat] = [300, 418, 470]
+    static let box: CGRect = {
+        let w = lines.map { textWidth($0.text, $0.size, weight: $0.weight) }.max() ?? 800
+        return CGRect(x: textX - 28, y: lineY[0] - 20, width: w + 56, height: lineY[2] + 42 + 22 - (lineY[0] - 20))
+    }()
+    static let anchor = CGPoint(x: box.minX, y: box.minY)
+    // Relative to the scene's start.
+    static let rAt = 1.35, dragFrom = 1.5, dragTo = 2.45, scanFrom = 2.45, hudAt = 2.65, cAt = 3.55
+}
+
+struct BoxScene: View {
+    var t: Double
+    var body: some View {
+        let u = t - S6.start
+        let appear = easeOut(ramp(u, 0, 0.6))
+        let toCorner = easeInOut(ramp(u, 0.45, 0.8))
+        let drag = easeInOut(ramp(u, S6.dragFrom, S6.dragTo - S6.dragFrom))
+        let start = CGPoint(x: 1320, y: 780)
+        let end = CGPoint(x: S6.box.maxX, y: S6.box.maxY)
+        let cursor = u < S6.dragFrom ? lerpP(start, S6.anchor, toCorner) : lerpP(S6.anchor, end, drag)
+        let boxOn = ramp(u, S6.rAt, 0.1)
+        let rect = CGRect(x: S6.anchor.x, y: S6.anchor.y, width: max(6, cursor.x - S6.anchor.x), height: max(6, cursor.y - S6.anchor.y))
+        let toast = ramp(u, S6.cAt + 0.02, 0.2)
+        let hudIn = spring(ramp(u, S6.hudAt, 0.55))
+        let hudPos = CGPoint(x: S6.box.maxX + 30, y: S6.box.minY - 4)
+        ZStack(alignment: .topLeading) {
+            player.offset(y: CGFloat(1 - appear) * 50).opacity(appear)
+            Spotlight(hole: rect, radius: 12, amount: boxOn * 0.85)
+            scanBand(u)
+            GrabBorder(rect: rect, colors: Mode.ocr.colors, t: t, flash: flash(u, S6.cAt), radius: 12, opacity: boxOn)
+            ScopeTag(label: "Box · \(Int(rect.width / 1.5)) × \(Int(rect.height / 1.5))", colors: Mode.ocr.colors, dots: 1, index: 0)
+                .at(rect.minX, rect.minY - 46)
+                .opacity(boxOn)
+            anchorMark(u)
+            HUDCard(width: 470) {
+                ModeBar(modes: [.ocr, .image, .qr], selected: .ocr)
+                PreviewRow(content: .text("“Ship small. Ship often. 12 launches…”", "3 lines · read on your Mac"), mode: .ocr)
+            }
+            .scaleEffect(0.9 + 0.1 * hudIn, anchor: .topLeading)
+            .opacity(hudIn * (1 - toast))
+            .at(hudPos.x, hudPos.y)
+            ToastCard(title: "Copied recognized text", detail: "“Ship small. Ship often.” · 3 lines", colors: Mode.ocr.colors, progress: ramp(u, S6.cAt, 1))
+                .frame(width: 470)
+                .opacity(toast)
+                .at(hudPos.x - 5, hudPos.y)
+            VStack(alignment: .leading, spacing: 18) {
+                KeyHint(key: "R", label: "draw a box", t: u, at: S6.rAt, colors: Mode.ocr.colors)
+                KeyHint(key: "C", label: "copy what's inside", t: u, at: S6.cAt, colors: Mode.ocr.colors)
+            }
+            .opacity(window(u, 0.8, S6.end - S6.start))
+            .at(hudPos.x + 6, 470)
+            Cursor().at(cursor.x - 2, cursor.y - 2).opacity(easeOut(ramp(u, 0.35, 0.3)))
+            Caption(headline: "Draw a box around anything.", sub: "Press R and move. Text in videos, slides and screenshots, read on your Mac.",
+                    t: t, start: S6.start + 0.2, end: S6.end)
+        }
+        .frame(width: W, height: H, alignment: .topLeading)
+    }
+
+    /// A light sweeping across the box as it's read.
+    func scanBand(_ u: Double) -> some View {
+        let x = ramp(u, S6.scanFrom, 0.55)
+        let r = S6.box
+        let bandX: CGFloat = r.minX + CGFloat(x) * r.width
+        return LinearGradient(colors: [.clear, Mode.ocr.pair.1.c(0.5), .white.opacity(0.55), Mode.ocr.pair.0.c(0.4), .clear], startPoint: .leading, endPoint: .trailing)
+            .frame(width: 140, height: r.height)
+            .position(x: bandX, y: r.midY)
+            .opacity(x > 0 && x < 1 ? 1 : 0)
+            .mask(Rectangle().frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY))
+            .blendMode(.screen)
+    }
+
+    /// The corner where the box started, pulsing once.
+    func anchorMark(_ u: Double) -> some View {
+        let on = spring(ramp(u, S6.rAt, 0.45))
+        return CornerShape(arm: 26, radius: 8)
+            .stroke(LinearGradient(colors: Mode.ocr.colors, startPoint: .topLeading, endPoint: .bottomTrailing), style: StrokeStyle(lineWidth: 6, lineCap: .round))
+            .frame(width: 40, height: 40)
+            .scaleEffect(0.4 + 0.6 * on)
+            .opacity(clamp(on * 2) * (1 - ramp(u, S6.dragTo, 0.3)))
+            .position(x: S6.anchor.x + 14, y: S6.anchor.y + 14)
+    }
+
+    var player: some View {
+        WindowChrome(rect: S6.win, dark: true, title: "Product Day 2026 — Keynote.mov") {
+            ZStack(alignment: .topLeading) {
+                let s = S6.slide.offsetBy(dx: -S6.win.minX, dy: -S6.win.minY)
+                ZStack(alignment: .topLeading) {
+                    LinearGradient(colors: [RGB(0x17142A).c(), RGB(0x2A1B4E).c(), RGB(0x3B1F45).c()], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    Circle().fill(RadialGradient(colors: [RGB(0xEC4F7C).c(0.35), .clear], center: .center, startRadius: 0, endRadius: 320))
+                        .frame(width: 640, height: 640).position(x: s.width - 200, y: 120)
+                    ForEach(0..<S6.lines.count, id: \.self) { i in
+                        let l = S6.lines[i]
+                        Text(l.text).font(.system(size: l.size, weight: Font.Weight(l.weight))).foregroundStyle(l.color.c()).tracking(l.size > 50 ? -1 : 0)
+                            .at(S6.textX - S6.slide.minX, S6.lineY[i] - S6.slide.minY)
+                    }
+                    // The speaker, in a corner bubble.
+                    Circle().fill(LinearGradient(colors: [RGB(0xFFB27F).c(), RGB(0xC2508F).c()], startPoint: .top, endPoint: .bottom))
+                        .frame(width: 118, height: 118)
+                        .overlay(Image(systemName: "person.fill").font(.system(size: 60)).foregroundStyle(.white.opacity(0.85)).offset(y: 11))
+                        .clipShape(Circle())
+                        .overlay(Circle().strokeBorder(.white.opacity(0.7), lineWidth: 4))
+                        .at(s.width - 150, s.height - 142)
+                }
+                .frame(width: s.width, height: s.height)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .at(s.minX, s.minY)
+                // Playback bar.
+                HStack(spacing: 18) {
+                    Image(systemName: "play.fill").font(.system(size: 22)).foregroundStyle(.white.opacity(0.85))
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.18)).frame(height: 6)
+                        Capsule().fill(LinearGradient(colors: brand.map { $0.c() }, startPoint: .leading, endPoint: .trailing)).frame(width: 420, height: 6)
+                        Circle().fill(.white).frame(width: 16, height: 16).offset(x: 412)
+                    }
+                    .frame(width: 1080)
+                    Text("12:48 / 34:10").font(.system(size: 17, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.6))
+                }
+                .at(48, S6.win.height - 70)
+            }
+        }
+    }
+}
+
+extension Font.Weight {
+    init(_ w: NSFont.Weight) {
+        switch w {
+        case .bold: self = .bold
+        case .semibold: self = .semibold
+        case .medium: self = .medium
+        default: self = .regular
+        }
+    }
+}
+
+// MARK: - Scene 7 · Fill a form (28.4 – 33.4)
+
+enum S7 {
+    static let start = 28.4, end = 33.4
+    static let left = CGRect(x: 110, y: 130, width: 620, height: 650)
+    static let right = CGRect(x: 1190, y: 110, width: 620, height: 690)
+    static let source: [(String, String)] = [("Name", "Ada Lovelace"), ("Email", "ada@analytical.org"), ("Phone", "+44 20 7946 0958"), ("City", "London")]
+    static let labels = ["Full name", "E-mail address", "Telephone", "Town / City", "Company"]
+    static let values: [String] = ["Ada Lovelace", "ada@analytical.org", "+44 20 7946 0958", "London", ""]
+    static let rowY: CGFloat = 362, rowH: CGFloat = 92
+    static let inputTop: CGFloat = 300, inputGap: CGFloat = 94
+    static var sourceRect: CGRect { CGRect(x: left.minX + 30, y: rowY - 14, width: left.width - 60, height: rowH * 4 + 4) }
+    static func input(_ i: Int) -> CGRect { CGRect(x: right.minX + 44, y: inputTop + 30 + CGFloat(i) * inputGap, width: right.width - 88, height: 50) }
+    static var targetRect: CGRect { CGRect(x: right.minX + 30, y: inputTop - 12, width: right.width - 60, height: inputGap * 5 + 4) }
+    static let tabAt = 1.25, copyAt = 1.75, fillAt = 2.85
+    static func fillStart(_ i: Int) -> Double { fillAt + 0.12 + Double(i) * 0.2 }
+}
+
+struct FormsScene: View {
+    var t: Double
+    var body: some View {
+        let u = t - S7.start
+        let appear = easeOut(ramp(u, 0, 0.6))
+        let leftOn = ramp(u, 0.75, 0.12) * (1 - ramp(u, 2.25, 0.2))
+        let rightOn = ramp(u, 2.5, 0.12)
+        let hudIn = spring(ramp(u, 0.85, 0.5))
+        let copied = ramp(u, S7.copyAt + 0.02, 0.2)
+        let done = ramp(u, 3.95, 0.25)
+        let fromP = CGPoint(x: 960, y: 900), atLeft = CGPoint(x: S7.sourceRect.midX + 60, y: S7.sourceRect.midY - 30)
+        let atRight = CGPoint(x: S7.input(0).midX + 80, y: S7.input(1).midY)
+        let cursor = u < 2.2 ? lerpP(fromP, atLeft, easeInOut(ramp(u, 0.35, 0.5))) : lerpP(atLeft, atRight, easeInOut(ramp(u, 2.2, 0.45)))
+        let col = CGRect(x: S7.left.maxX + 20, y: 0, width: S7.right.minX - S7.left.maxX - 40, height: 0)
+        ZStack(alignment: .topLeading) {
+            contactCard.offset(x: CGFloat(1 - appear) * -40).opacity(appear)
+            checkout(u).offset(x: CGFloat(1 - appear) * 40).opacity(appear)
+            GrabBorder(rect: S7.sourceRect, colors: Mode.text.colors, t: t, flash: flash(u, S7.copyAt), radius: 16, opacity: leftOn)
+            TagAbove(label: "Form", rect: S7.sourceRect, colors: Mode.text.colors).opacity(leftOn)
+            GrabBorder(rect: S7.targetRect, colors: Mode.link.colors, t: t, flash: flash(u, S7.fillAt + 0.1), radius: 16, opacity: rightOn)
+            TagAbove(label: "Form", rect: S7.targetRect, colors: Mode.link.colors).opacity(rightOn)
+            // The middle: what's on the clipboard, and the keys.
+            HUDCard(width: col.width) {
+                FormatBar(formats: ["Plain", "Cite", "Fields"], selected: u < S7.tabAt ? 0 : 2, colors: Mode.text.colors)
+                PreviewRow(content: u < S7.tabAt
+                           ? .text("Ada Lovelace  ada@analytical…", "4 lines · 9 words")
+                           : .snippet(["{", "  \"Name\": \"Ada Lovelace\",", "  \"Email\": \"ada@analytical.org\",", "  …"], "Fields · JSON · 4 values"),
+                           mode: .text)
+            }
+            .scaleEffect(0.92 + 0.08 * hudIn, anchor: .top)
+            .opacity(hudIn * (1 - copied))
+            .at(col.minX, 200)
+            ToastCard(title: done > 0 ? "Filled 4 of 5 fields" : "Copied 4 fields",
+                      detail: done > 0 ? "Check them before you submit" : "Name, email, phone, city",
+                      colors: done > 0 ? Mode.link.colors : Mode.text.colors,
+                      progress: done > 0 ? ramp(u, 3.95, 1) : ramp(u, S7.copyAt, 1))
+                .frame(width: col.width)
+                .scaleEffect(done > 0 ? 0.96 + 0.04 * spring(ramp(u, 3.95, 0.5)) : 1)
+                .opacity(copied)
+                .at(col.minX, 200)
+            VStack(alignment: .leading, spacing: 20) {
+                KeyHint(key: "⇥", label: "as fields", t: u, at: S7.tabAt, colors: Mode.text.colors)
+                KeyHint(key: "C", label: "copy", t: u, at: S7.copyAt, colors: Mode.text.colors)
+                Image(systemName: "arrow.down").font(.system(size: 26, weight: .bold)).foregroundStyle(.white.opacity(0.35 + 0.5 * ramp(u, 2.2, 0.3)))
+                    .padding(.leading, 16)
+                KeyHint(key: "F", label: "fill this form", t: u, at: S7.fillAt, colors: Mode.link.colors)
+            }
+            .opacity(window(u, 0.6, S7.end - S7.start))
+            .at(col.minX + 40, 470)
+            Cursor().at(cursor.x, cursor.y).opacity(easeOut(ramp(u, 0.3, 0.3)))
+            Caption(headline: "Copy a form. Fill another.", sub: "F matches fields by their labels and never touches passwords.",
+                    t: t, start: S7.start + 0.2, end: S7.end)
+        }
+        .frame(width: W, height: H, alignment: .topLeading)
+    }
+
+    var contactCard: some View {
+        WindowChrome(rect: S7.left, title: "Contacts") {
+            ZStack(alignment: .topLeading) {
+                Circle().fill(LinearGradient(colors: [RGB(0x7C5CFF).c(), RGB(0xEC4F7C).c()], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 92, height: 92)
+                    .overlay(Text("AL").font(.system(size: 36, weight: .bold, design: .rounded)).foregroundStyle(.white))
+                    .at(40, 72)
+                Text("Ada Lovelace").font(.system(size: 36, weight: .bold)).foregroundStyle(RGB(0x15151A).c()).at(156, 80)
+                Text("Analytical Engines Ltd.").font(.system(size: 19)).foregroundStyle(.black.opacity(0.45)).at(158, 128)
+                ForEach(0..<4, id: \.self) { i in
+                    let y = S7.rowY - S7.left.minY + CGFloat(i) * S7.rowH
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(S7.source[i].0.lowercased()).font(.system(size: 16, weight: .medium)).foregroundStyle(RGB(0x2F6FEB).c())
+                        Text(S7.source[i].1).font(.system(size: 25, weight: .medium)).foregroundStyle(RGB(0x15151A).c())
+                    }
+                    .at(44, y)
+                    Rectangle().fill(Color.black.opacity(0.07)).frame(width: S7.left.width - 88, height: 1).at(44, y + S7.rowH - 12)
+                }
+            }
+        }
+    }
+
+    func checkout(_ u: Double) -> some View {
+        WindowChrome(rect: S7.right, title: "shop.northwind.design/checkout", urlBar: true) {
+            ZStack(alignment: .topLeading) {
+                Text("Shipping details").font(.system(size: 34, weight: .bold)).foregroundStyle(RGB(0x15151A).c()).at(44, 78)
+                ForEach(0..<5, id: \.self) { i in
+                    let r = S7.input(i).offsetBy(dx: -S7.right.minX, dy: -S7.right.minY)
+                    let typed = ramp(u, S7.fillStart(i), 0.28)
+                    let value = S7.values[i]
+                    let shown = String(value.prefix(Int((Double(value.count) * typed).rounded())))
+                    let glow = value.isEmpty ? 0 : (1 - ramp(u, S7.fillStart(i) + 0.3, 0.5)) * ramp(u, S7.fillStart(i), 0.05)
+                    Text(S7.labels[i]).font(.system(size: 16, weight: .medium)).foregroundStyle(.black.opacity(0.5)).at(r.minX, r.minY - 26)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white)
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.black.opacity(0.14), lineWidth: 1.5))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(LinearGradient(colors: Mode.link.colors, startPoint: .leading, endPoint: .trailing), lineWidth: 3).opacity(glow))
+                        .shadow(color: Mode.link.pair.0.c(0.5 * glow), radius: 12)
+                        .frame(width: r.width, height: r.height)
+                        .at(r.minX, r.minY)
+                    Text(shown).font(.system(size: 22, weight: .medium)).foregroundStyle(RGB(0x15151A).c()).at(r.minX + 16, r.minY + 11)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Scene 8 · Compare (33.4 – 37.8)
+
+enum S8 {
+    static let start = 33.4, end = 37.8
+    static let clip = CGRect(x: 150, y: 210, width: 600, height: 270)
+    static let doc = CGRect(x: 860, y: 100, width: 900, height: 520)
+    static let v2Lines = ["Payment is due within 45 days of the invoice", "date. Late fees apply after 30 days."]
+    static let paraX: CGFloat = 930, paraY: CGFloat = 322, lineH: CGFloat = 46, fontSize: CGFloat = 30
+    static var para: CGRect {
+        let w = v2Lines.map { textWidth($0, fontSize) }.max() ?? 600
+        return CGRect(x: paraX - 14, y: paraY - 10, width: w + 28, height: lineH * CGFloat(v2Lines.count) + 14)
+    }
+    static let dAt = 1.45, panelAt = 1.6
+}
+
+struct CompareScene: View {
+    var t: Double
+    var body: some View {
+        let u = t - S8.start
+        let appear = easeOut(ramp(u, 0, 0.6))
+        let on = ramp(u, 0.85, 0.12)
+        let panel = spring(ramp(u, S8.panelAt, 0.6))
+        let cursor = lerpP(CGPoint(x: 1300, y: 760), CGPoint(x: S8.para.midX + 40, y: S8.para.midY + 4), easeInOut(ramp(u, 0.35, 0.55)))
+        ZStack(alignment: .topLeading) {
+            clipboardCard.rotationEffect(.degrees(-2.5)).offset(y: CGFloat(1 - appear) * 40).opacity(appear)
+            document.offset(y: CGFloat(1 - appear) * 50).opacity(appear)
+            GrabBorder(rect: S8.para, colors: Mode.qr.colors, t: t, radius: 12, opacity: on)
+            TagAbove(label: "Paragraph", rect: S8.para, colors: Mode.qr.colors).opacity(on)
+            diffPanel(u)
+                .scaleEffect(0.9 + 0.1 * panel, anchor: .bottom)
+                .opacity(clamp(panel * 1.5))
+                .position(x: W / 2, y: 740)
+            KeyHint(key: "D", label: "compare", t: u, at: S8.dAt, colors: Mode.qr.colors)
+                .opacity(window(u, 0.6, S8.end - S8.start))
+                .at(S8.clip.minX + 20, S8.clip.maxY + 60)
+            Cursor().at(cursor.x, cursor.y).opacity(easeOut(ramp(u, 0.3, 0.3)))
+            Caption(headline: "See what changed.", sub: "D compares what you point at with your clipboard, word by word.",
+                    t: t, start: S8.start + 0.2, end: S8.end)
+        }
+        .frame(width: W, height: H, alignment: .topLeading)
+    }
+
+    var clipboardCard: some View {
+        HUDCard(width: S8.clip.width) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.on.clipboard.fill").font(.system(size: 20, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                Text("On your clipboard").font(.system(size: 19, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+            }
+            Text("Payment is due within 30 days of the invoice date. Late fees apply after 15 days.")
+                .font(.system(size: 27)).foregroundStyle(.white.opacity(0.92)).lineSpacing(6)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .at(S8.clip.minX, S8.clip.minY)
+    }
+
+    var document: some View {
+        WindowChrome(rect: S8.doc, title: "Contract v2.pages") {
+            ZStack(alignment: .topLeading) {
+                Text("4. Payment terms").font(.system(size: 34, weight: .bold)).foregroundStyle(RGB(0x15151A).c())
+                    .at(S8.paraX - S8.doc.minX, 192 - S8.doc.minY)
+                ForEach(0..<S8.v2Lines.count, id: \.self) { i in
+                    Text(S8.v2Lines[i]).font(.system(size: S8.fontSize)).foregroundStyle(RGB(0x2A2A31).c())
+                        .at(S8.paraX - S8.doc.minX, S8.paraY - S8.doc.minY + CGFloat(i) * S8.lineH)
+                }
+                ForEach(0..<3, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.07)).frame(width: i == 2 ? 420 : 760, height: 14)
+                        .at(S8.paraX - S8.doc.minX, 462 - S8.doc.minY + CGFloat(i) * 34)
+                }
+            }
+        }
+    }
+
+    func diffPanel(_ u: Double) -> some View {
+        let a = easeOut(ramp(u, 1.85, 0.3)), b = easeOut(ramp(u, 2.15, 0.3))
+        let parts: [(String, Int)] = [("Payment is due within ", 0), ("30", -1), ("45", 1), (" days of the invoice date. Late fees apply after ", 0), ("15", -2), ("30", 2), (" days.", 0)]
+        return HUDCard(width: 1240) {
+            HStack(spacing: 12) {
+                Text("Compare").font(.system(size: 24, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                Text("+2").font(.system(size: 18, weight: .bold, design: .rounded)).foregroundStyle(RGB(0x34D399).c())
+                    .padding(.horizontal, 10).padding(.vertical, 3).background(Capsule().fill(RGB(0x34D399).c(0.16)))
+                Text("−2").font(.system(size: 18, weight: .bold, design: .rounded)).foregroundStyle(RGB(0xF87171).c())
+                    .padding(.horizontal, 10).padding(.vertical, 3).background(Capsule().fill(RGB(0xF87171).c(0.16)))
+                Text("words").font(.system(size: 17)).foregroundStyle(.white.opacity(0.5))
+                Spacer()
+                Text("Copy Patch").font(.system(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 14).padding(.vertical, 6).background(Capsule().fill(Color.white.opacity(0.1)))
+            }
+            HStack(spacing: 0) {
+                ForEach(0..<parts.count, id: \.self) { i in
+                    let p = parts[i]
+                    let x = abs(p.1) == 1 ? a : b
+                    let removed = p.1 < 0, added = p.1 > 0
+                    Text(p.0)
+                        .font(.system(size: 28, weight: p.1 == 0 ? .regular : .semibold))
+                        .strikethrough(removed && x > 0.5, color: RGB(0xF87171).c())
+                        .foregroundStyle(removed ? RGB(0xF87171).c(0.4 + 0.6 * x) : added ? RGB(0x34D399).c(0.4 + 0.6 * x) : Color.white.opacity(0.9))
+                        .padding(.horizontal, p.1 == 0 ? 0 : 5)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill((removed ? RGB(0xF87171) : RGB(0x34D399)).c(p.1 == 0 ? 0 : 0.2 * x)))
+                        .scaleEffect(p.1 == 0 ? 1 : 0.9 + 0.1 * spring(x))
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Scene 9 · Live pins (37.8 – 42.2)
+
+enum S9 {
+    static let start = 37.8, end = 42.2
+    static let dash = CGRect(x: 170, y: 110, width: 1060, height: 680)
+    static let card = CGRect(x: 230, y: 236, width: 640, height: 250)
+    static let pin = CGRect(x: 1290, y: 190, width: 480, height: 206)
+    static let editor = CGRect(x: 150, y: 150, width: 1060, height: 660)
+    static let pAt = 1.1, liveAt = 1.65, coverAt = 1.95, changeAt = 3.1
+}
+
+/// The build status shown on the dashboard and in the pin.
+struct BuildStatus: View {
+    var progress: Double
+    var passed: Bool
+    var scale: CGFloat = 1
+    var body: some View {
+        let s = scale
+        VStack(alignment: .leading, spacing: 18 * s) {
+            HStack(spacing: 12 * s) {
+                Text("Build #482").font(.system(size: 30 * s, weight: .bold)).foregroundStyle(.white)
+                Spacer()
+                HStack(spacing: 8 * s) {
+                    Image(systemName: passed ? "checkmark.circle.fill" : "circle.dotted").font(.system(size: 18 * s, weight: .bold))
+                    Text(passed ? "Passed" : "Running").font(.system(size: 19 * s, weight: .semibold))
+                }
+                .foregroundStyle(passed ? RGB(0x34D399).c() : RGB(0xFBBF24).c())
+                .padding(.horizontal, 14 * s).padding(.vertical, 6 * s)
+                .background(Capsule().fill((passed ? RGB(0x34D399) : RGB(0xFBBF24)).c(0.15)))
+            }
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.1)).frame(height: 12 * s)
+                Capsule().fill(LinearGradient(colors: passed ? [RGB(0x10B981).c(), RGB(0x34D399).c()] : [RGB(0xF59E0B).c(), RGB(0xFBBF24).c()],
+                                              startPoint: .leading, endPoint: .trailing))
+                    .frame(width: max(12 * s, 540 * s * CGFloat(progress)), height: 12 * s)
+            }
+            .frame(width: 540 * s)
+            Text(passed ? "1,204 tests passed · 2m 41s" : "Tests \(Int(progress * 1204)) of 1,204 · \(Int(progress * 100))%")
+                .font(.system(size: 19 * s, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.6))
+        }
+    }
+}
+
+struct LiveScene: View {
+    var t: Double
+    var body: some View {
+        let u = t - S9.start
+        let appear = easeOut(ramp(u, 0, 0.6))
+        let on = ramp(u, 0.75, 0.12) * (1 - ramp(u, S9.pAt + 0.3, 0.2))
+        let fly = spring(ramp(u, S9.pAt + 0.05, 0.6))
+        let pinRect = lerp(S9.card, S9.pin, easeInOut(ramp(u, S9.pAt + 0.05, 0.5)))
+        let cover = easeInOut(ramp(u, S9.coverAt, 0.55))
+        let progress = u < 2.3 ? 0.64 : 0.64 + 0.24 * easeInOut(ramp(u, 2.3, 0.45)) + 0.12 * easeOut(ramp(u, S9.changeAt - 0.15, 0.15))
+        let passed = u >= S9.changeAt
+        let changeFlash = (1 - ramp(u, S9.changeAt, 0.8)) * ramp(u, S9.changeAt - 0.02, 0.04)
+        let cursor = lerpP(CGPoint(x: 1100, y: 800), CGPoint(x: S9.card.midX + 80, y: S9.card.midY), easeInOut(ramp(u, 0.35, 0.5)))
+        ZStack(alignment: .topLeading) {
+            dashboard(progress: min(progress, 0.64), passed: false).offset(y: CGFloat(1 - appear) * 50).opacity(appear)
+            editor.offset(y: CGFloat(1 - cover) * 760).opacity(cover)
+            GrabBorder(rect: S9.card.insetBy(dx: -6, dy: -6), colors: Mode.image.colors, t: t, radius: 22, opacity: on)
+            TagAbove(label: "Status", rect: S9.card.insetBy(dx: -6, dy: -6), colors: Mode.image.colors).opacity(on)
+            pinWindow(progress: progress, passed: passed, flash: changeFlash, u: u)
+                .frame(width: pinRect.width, height: pinRect.height)
+                .scaleEffect(0.96 + 0.04 * fly)
+                .position(x: pinRect.midX, y: pinRect.midY)
+                .opacity(clamp(fly * 3))
+            KeyHint(key: "P", label: "pin it", t: u, at: S9.pAt, colors: Mode.image.colors)
+                .opacity(window(u, 0.6, S9.end - S9.start))
+                .at(S9.pin.minX + 10, S9.pin.maxY + 40)
+            Cursor().at(cursor.x, cursor.y).opacity(easeOut(ramp(u, 0.3, 0.3)) * (1 - cover))
+            Caption(headline: "Keep an eye on it.", sub: "Pin it, switch it to Live, and it flashes the moment it changes.",
+                    t: t, start: S9.start + 0.2, end: S9.end)
+        }
+        .frame(width: W, height: H, alignment: .topLeading)
+    }
+
+    func dashboard(progress: Double, passed: Bool) -> some View {
+        WindowChrome(rect: S9.dash, dark: true, title: "CI — grab · main") {
+            ZStack(alignment: .topLeading) {
+                BuildStatus(progress: progress, passed: passed)
+                    .padding(32)
+                    .frame(width: S9.card.width, height: S9.card.height, alignment: .topLeading)
+                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.white.opacity(0.05)))
+                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+                    .at(S9.card.minX - S9.dash.minX, S9.card.minY - S9.dash.minY)
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(["▸ Compiling Grab (release)", "▸ Running OCRMergeTests", "▸ Running FeatureTests", "▸ Running SmartTypesTests"], id: \.self) { l in
+                        Text(l).font(.system(size: 19, design: .monospaced)).foregroundStyle(.white.opacity(0.45))
+                    }
+                }
+                .at(S9.card.minX - S9.dash.minX + 4, S9.card.maxY - S9.dash.minY + 40)
+            }
+        }
+    }
+
+    var editor: some View {
+        WindowChrome(rect: S9.editor, dark: true, title: "Session.swift") {
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(S4.code.enumerated()), id: \.offset) { n, line in
+                    PrecisionScene(t: 0).highlighted(line)
+                        .at(110, 90 + CGFloat(n) * S4.lineH)
+                }
+            }
+        }
+    }
+
+    func pinWindow(progress: Double, passed: Bool, flash: Double, u: Double) -> some View {
+        let live = spring(ramp(u, S9.liveAt, 0.5))
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        return ZStack(alignment: .topLeading) {
+            shape.fill(LinearGradient(colors: [RGB(0x23232B).c(0.98), RGB(0x16161C).c(0.98)], startPoint: .top, endPoint: .bottom))
+            BuildStatus(progress: progress, passed: passed, scale: 0.72)
+                .padding(.horizontal, 26).padding(.top, 70)
+            HStack(spacing: 8) {
+                Circle().fill(Color.red).frame(width: 11, height: 11).opacity(0.5 + 0.5 * (sin(u * 7) * 0.5 + 0.5))
+                Text(passed ? "changed just now" : "LIVE").font(.system(size: passed ? 15 : 14, weight: passed ? .medium : .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Capsule().fill(Color.black.opacity(0.55)))
+            .scaleEffect(0.6 + 0.4 * live)
+            .opacity(live)
+            .offset(x: 22, y: 20)
+            HStack(spacing: 7) {
+                Image(systemName: "dot.radiowaves.left.and.right").font(.system(size: 14, weight: .bold))
+                Text("Live").font(.system(size: 15, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Capsule().fill(LinearGradient(colors: Mode.image.colors, startPoint: .leading, endPoint: .trailing)).opacity(0.25 + 0.75 * live))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 18).padding(.top, 18)
+            shape.strokeBorder(LinearGradient(colors: brand.map { $0.c() }, startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 5).opacity(flash)
+            shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+        .shadow(color: brand[1].c(0.7 * flash), radius: 30)
+    }
+}
+
+// MARK: - Scene 10 · Make it yours (42.2 – 47.0)
+
+enum S10 {
+    static let start = 42.2, end = 47.0
+    static let cardW: CGFloat = 520, cardH: CGFloat = 520, gap: CGFloat = 46, top: CGFloat = 150
+    static func card(_ i: Int) -> CGRect {
+        let total = cardW * 3 + gap * 2
+        return CGRect(x: (W - total) / 2 + CGFloat(i) * (cardW + gap), y: top, width: cardW, height: cardH)
+    }
+    static let keySteps: [Double] = [0.9, 1.35, 1.8, 2.25, 2.75]
+    static let keyOrder = [0, 1, 2, 3, 1]
+    static let mascotSteps: [Double] = [1.0, 1.45, 1.9, 2.35]
+    static let hatAt = 3.0
+}
+
+struct YoursScene: View {
+    var t: Double
+    var body: some View {
+        let u = t - S10.start
+        ZStack(alignment: .topLeading) {
+            ForEach(0..<3, id: \.self) { i in
+                let r = S10.card(i)
+                let a = easeOut(ramp(u, 0.15 + Double(i) * 0.15, 0.55))
+                panel(i, u)
+                    .frame(width: r.width, height: r.height, alignment: .topLeading)
+                    .background(RoundedRectangle(cornerRadius: 30, style: .continuous).fill(Color.white.opacity(0.055)))
+                    .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
+                    .offset(y: CGFloat(1 - a) * 40)
+                    .opacity(a)
+                    .at(r.minX, r.minY)
+            }
+            Caption(headline: "Make it yours.", sub: "Your key, your formats, your mascot.", t: t, start: S10.start + 0.2, end: S10.end, y: 880)
+        }
+        .frame(width: W, height: H, alignment: .topLeading)
+    }
+
+    @ViewBuilder func panel(_ i: Int, _ u: Double) -> some View {
+        switch i {
+        case 0: keys(u)
+        case 1: formats(u)
+        default: mascots(u)
+        }
+    }
+
+    func header(_ symbol: String, _ title: String, _ sub: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol).font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(LinearGradient(colors: brand.map { $0.c() }, startPoint: .topLeading, endPoint: .bottomTrailing))
+                Text(title).font(.system(size: 32, weight: .bold)).foregroundStyle(.white)
+            }
+            Text(sub).font(.system(size: 18)).foregroundStyle(.white.opacity(0.5))
+        }
+    }
+
+    func keys(_ u: Double) -> some View {
+        var step = -1
+        for (k, s) in S10.keySteps.enumerated() where u >= s { step = k }
+        let selected = step >= 0 ? S10.keyOrder[step] : 0
+        let options: [([String], String)] = [(["⌥"], "Option"), (["right ⌥"], "Right Option only"), (["⌃", "⌥"], "Control-Option"), (["⌃", "⌥", "⇧", "⌘"], "Hyper")]
+        return VStack(alignment: .leading, spacing: 26) {
+            header("keyboard", "Your key", "What you hold to grab")
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(0..<options.count, id: \.self) { k in
+                    let on = k == selected
+                    HStack(spacing: 8) {
+                        ForEach(options[k].0, id: \.self) { cap in
+                            Keycap(label: cap, size: 42, width: cap.count > 1 ? 110 : 42, lit: on ? 1 : 0)
+                        }
+                        Text(options[k].1).font(.system(size: 21, weight: on ? .semibold : .regular))
+                            .foregroundStyle(.white.opacity(on ? 1 : 0.5))
+                            .padding(.leading, 8)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(LinearGradient(colors: brand.map { $0.c(0.22) }, startPoint: .leading, endPoint: .trailing))
+                        .opacity(on ? 1 : 0))
+                }
+            }
+        }
+        .padding(34)
+    }
+
+    func formats(_ u: Double) -> some View {
+        let picture = ramp(u, 1.1, 0.25), jira = ramp(u, 2.5, 0.25)
+        let selected = u < 1.1 ? 0 : (u < 2.5 ? 2 : 3)
+        return VStack(alignment: .leading, spacing: 26) {
+            header("curlybraces", "Your formats", "Templates and Shortcuts, in the ⇥ list")
+            FormatBar(formats: ["Code", "Markdown", "Picture", "Jira link"], selected: selected, colors: brand.map { $0.c() })
+                .scaleEffect(0.92, anchor: .leading)
+            ZStack(alignment: .topLeading) {
+                codeCard
+                    .scaleEffect(0.85 + 0.15 * spring(picture))
+                    .opacity(picture * (1 - jira))
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(verbatim: "[{title}]({url})").font(.system(size: 28, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(LinearGradient(colors: brand.map { $0.c() }, startPoint: .leading, endPoint: .trailing))
+                    Image(systemName: "arrow.down").font(.system(size: 22, weight: .bold)).foregroundStyle(.white.opacity(0.4))
+                    Text(verbatim: "[GRAB-42 Paste queue](https://…)").font(.system(size: 21, design: .monospaced)).foregroundStyle(.white.opacity(0.9))
+                }
+                .padding(24)
+                .frame(width: 452, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(0.06)))
+                .scaleEffect(0.9 + 0.1 * spring(jira))
+                .opacity(jira)
+            }
+        }
+        .padding(34)
+    }
+
+    /// The code picture: syntax colors on a dark card in a gradient frame.
+    var codeCard: some View {
+        let lines: [[(String, UInt32)]] = [
+            [("func ", 0xFF7AB2), ("greet", 0x8EE59B), ("(_ name: ", 0xE8E6F0), ("String", 0x6FD6FF), (") {", 0xE8E6F0)],
+            [("    // say hi", 0x7F8399)],
+            [("    return ", 0xFF7AB2), ("\"Hi, \\(name)\"", 0xFFB86C)],
+            [("}", 0xE8E6F0)],
+        ]
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Circle().fill(RGB(0xFF5F57).c()).frame(width: 11, height: 11)
+                Circle().fill(RGB(0xFEBC2E).c()).frame(width: 11, height: 11)
+                Circle().fill(RGB(0x28C840).c()).frame(width: 11, height: 11)
+            }
+            .padding(.bottom, 6)
+            ForEach(0..<lines.count, id: \.self) { i in
+                HStack(spacing: 0) {
+                    ForEach(0..<lines[i].count, id: \.self) { j in
+                        Text(lines[i][j].0).foregroundStyle(RGB(lines[i][j].1).c())
+                    }
+                }
+                .font(.system(size: 19, design: .monospaced))
+            }
+        }
+        .padding(22)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(RGB(0x17161F).c()))
+        .padding(22)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(LinearGradient(colors: [RGB(0xFF8A3D).c(), RGB(0xEC4F7C).c(), RGB(0x7C5CFF).c()], startPoint: .topLeading, endPoint: .bottomTrailing)))
+        .shadow(color: brand[1].c(0.4), radius: 20, y: 8)
+    }
+
+    func mascots(_ u: Double) -> some View {
+        var step = -1
+        for (k, s) in S10.mascotSteps.enumerated() where u >= s { step = k }
+        let hat = ramp(u, S10.hatAt, 0.5)
+        return VStack(alignment: .leading, spacing: 22) {
+            header("face.smiling", "Your mascot", "Who carries each grab home")
+            LazyVGrid(columns: [GridItem(.fixed(210), spacing: 20), GridItem(.fixed(210), spacing: 20)], spacing: 18) {
+                ForEach(Mascot.allCases, id: \.rawValue) { m in
+                    let on = m.rawValue == step
+                    VStack(spacing: 10) {
+                        MascotIdleView(kind: m, t: t + Double(m.rawValue) * 0.7, hat: clamp(hat * 4 - Double(m.rawValue) * 0.6))
+                            .scaleEffect(2.1)
+                            .frame(width: 140, height: 112)
+                        Text(m.title).font(.system(size: 19, weight: .semibold)).foregroundStyle(.white.opacity(on ? 1 : 0.6))
+                    }
+                    .frame(width: 210, height: 160)
+                    .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(on ? 0.08 : 0.03)))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(LinearGradient(colors: brand.map { $0.c() }, startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 2.5)
+                        .opacity(on ? 1 : 0))
+                }
+            }
+            Text("🎃 They even dress up for the holidays.").font(.system(size: 17, weight: .medium)).foregroundStyle(.white.opacity(0.6))
+                .opacity(easeOut(ramp(u, S10.hatAt + 0.2, 0.4)))
+        }
+        .padding(34)
+    }
+}
+
+// MARK: - Scene 11 · Actions (47.0 – 50.8; laid out SHIFT seconds earlier)
 
 struct ActionsScene: View {
     var t: Double
@@ -1328,13 +2426,15 @@ struct ActionsScene: View {
         ("S", "Speak", "read it aloud", "speaker.wave.2.fill"),
         ("T", "Translate", "on-device", "translate"),
         ("E", "Ask AI", "explain, summarize", "sparkles"),
+        ("V", "Paste next", "the shelf, in order", "list.number"),
         ("Z", "Undo", "restore clipboard", "arrow.uturn.backward"),
     ]
-    static func at(_ i: Int) -> Double { 23.95 + Double(i) * 0.3 }
+    static func at(_ i: Int) -> Double { 23.95 + Double(i) * 0.27 }
 
     var body: some View {
-        let size: CGFloat = 104, gap: CGFloat = 46
-        let total = size * 7 + gap * 6
+        let size: CGFloat = 96, gap: CGFloat = 60
+        let n = CGFloat(Self.keys.count)
+        let total = size * n + gap * (n - 1)
         let x0 = (W - total) / 2
         ZStack(alignment: .topLeading) {
             HStack(spacing: 14) {
@@ -1344,7 +2444,7 @@ struct ActionsScene: View {
             }
             .opacity(window(t, 23.55, 27.2))
             .position(x: W / 2, y: 330)
-            ForEach(0..<7, id: \.self) { i in
+            ForEach(0..<Self.keys.count, id: \.self) { i in
                 let k = Self.keys[i]
                 let s = Self.at(i)
                 let lit = easeOut(ramp(t, s, 0.25))
@@ -1359,22 +2459,24 @@ struct ActionsScene: View {
                         .opacity(lit)
                     Keycap(label: k.key, size: size, pressed: press, lit: lit, colors: colors)
                     VStack(spacing: 6) {
-                        Text(k.title).font(.system(size: 27, weight: .bold)).foregroundStyle(.white.opacity(0.4 + 0.6 * lit))
-                        Text(k.detail).font(.system(size: 17)).foregroundStyle(.white.opacity(0.25 + 0.35 * lit))
+                        Text(k.title).font(.system(size: 25, weight: .bold)).foregroundStyle(.white.opacity(0.4 + 0.6 * lit))
+                            .lineLimit(1).fixedSize()
+                        Text(k.detail).font(.system(size: 15.5)).foregroundStyle(.white.opacity(0.25 + 0.35 * lit))
+                            .multilineTextAlignment(.center).lineLimit(2).frame(width: 146)
                     }
-                    .frame(width: 170)
+                    .frame(width: 150)
                 }
-                .frame(width: 170)
+                .frame(width: 150)
                 .position(x: x0 + size / 2 + CGFloat(i) * (size + gap), y: 560)
                 .opacity(easeOut(ramp(t, 23.45 + Double(i) * 0.05, 0.4)))
             }
-            Caption(headline: "Do more than copy.", sub: "Open, peek, pin, speak, translate, ask on-device AI, undo.", t: t, start: 23.5, end: 27.2)
+            Caption(headline: "Do more than copy.", sub: "Open, peek, pin, speak, translate, ask on-device AI, paste in order, undo.", t: t, start: 23.5, end: 27.2)
         }
         .frame(width: W, height: H, alignment: .topLeading)
     }
 }
 
-// MARK: - Scene 7 · Outro (27.2 – 30)
+// MARK: - Scene 12 · Outro (50.8 – 53.6; laid out SHIFT seconds earlier)
 
 struct OutroScene: View {
     var t: Double
@@ -1402,6 +2504,16 @@ struct OutroScene: View {
             }
             .opacity(easeOut(ramp(b, 1.5, 0.55)))
             .position(x: W / 2, y: 790)
+            HStack(spacing: 12) {
+                Image(systemName: "terminal").font(.system(size: 20, weight: .semibold))
+                Text("brew install --cask 0x1p0/tap/grab").font(.system(size: 23, weight: .medium, design: .monospaced))
+            }
+            .foregroundStyle(.white.opacity(0.62))
+            .padding(.horizontal, 22).padding(.vertical, 11)
+            .background(Capsule().fill(Color.white.opacity(0.07)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
+            .opacity(easeOut(ramp(b, 1.85, 0.55)))
+            .position(x: W / 2, y: 880)
         }
         .frame(width: W, height: H)
         .overlay(Color.black.opacity(fade))
@@ -1422,7 +2534,11 @@ struct Frame: View {
     var t: Double
 
     var accent: RGB {
-        let stops: [(Double, RGB)] = [(0, brand[1]), (3.4, RGB(0x2F7BFF)), (8.6, RGB(0x7C5CFF)), (14, RGB(0x22C3EE)), (18.6, RGB(0x10B981)), (23.4, brand[0]), (27.2, brand[1])]
+        let stops: [(Double, RGB)] = [
+            (0, brand[1]), (3.4, RGB(0x2F7BFF)), (8.6, RGB(0x7C5CFF)), (14, RGB(0x22C3EE)), (18.6, RGB(0x10B981)),
+            (23.4, RGB(0x22C3EE)), (28.4, RGB(0x2F7BFF)), (33.4, RGB(0x10B981)), (37.8, RGB(0xFF7A1A)), (42.2, RGB(0x7C5CFF)),
+            (47.0, brand[0]), (50.8, brand[1]),
+        ]
         var a = stops[0], b = stops[0]
         for s in stops where s.0 <= t { a = s }
         b = stops.first { $0.0 > t } ?? a
@@ -1438,8 +2554,13 @@ struct Frame: View {
             if t > 8.5 && t < 14.1 { AnythingScene(t: t).modifier(SceneFX(t: t, start: 8.6, end: 14.0)) }
             if t > 13.9 && t < 18.7 { PrecisionScene(t: t).modifier(SceneFX(t: t, start: 14.0, end: 18.6)) }
             if t > 18.5 && t < 23.5 { SmartScene(t: t).modifier(SceneFX(t: t, start: 18.6, end: 23.4)) }
-            if t > 23.3 && t < 27.3 { ActionsScene(t: t).modifier(SceneFX(t: t, start: 23.4, end: 27.2)) }
-            if t > 27.1 { OutroScene(t: t).modifier(SceneFX(t: t, start: 27.2, end: 31)) }
+            if t > 23.3 && t < 28.5 { BoxScene(t: t).modifier(SceneFX(t: t, start: S6.start, end: S6.end)) }
+            if t > 28.3 && t < 33.5 { FormsScene(t: t).modifier(SceneFX(t: t, start: S7.start, end: S7.end)) }
+            if t > 33.3 && t < 37.9 { CompareScene(t: t).modifier(SceneFX(t: t, start: S8.start, end: S8.end)) }
+            if t > 37.7 && t < 42.3 { LiveScene(t: t).modifier(SceneFX(t: t, start: S9.start, end: S9.end)) }
+            if t > 42.1 && t < 47.1 { YoursScene(t: t).modifier(SceneFX(t: t, start: S10.start, end: S10.end)) }
+            if t > 46.9 && t < 50.9 { ActionsScene(t: t - SHIFT).modifier(SceneFX(t: t, start: 47.0, end: 50.8)) }
+            if t > 50.7 { OutroScene(t: t - SHIFT).modifier(SceneFX(t: t, start: 50.8, end: 56)) }
             // Fade up from black.
             Color.black.opacity(1 - easeOut(ramp(t, 0, 0.5)))
         }
@@ -1612,6 +2733,18 @@ final class Mixer {
         }
     }
 
+    /// A sine that slides from one pitch to another: boings and plops.
+    func glide(from f0: Double, to f1: Double, dur: Double, decay: Double) -> [Float] {
+        let n = Int(dur * 3 * rate)
+        var ph = 0.0
+        return (0..<n).map { i in
+            let t = Double(i) / rate
+            let f = f0 + (f1 - f0) * min(1, t / dur)
+            ph += 2 * .pi * f / rate
+            return Float((sin(ph) + 0.2 * sin(2 * ph)) * min(1, t / 0.003) * exp(-t * decay))
+        }
+    }
+
     func tick(_ freq: Double = 1800) -> [Float] {
         let n = Int(0.07 * rate)
         return (0..<n).map { i in
@@ -1736,26 +2869,28 @@ func soundtrack() -> [Int16] {
     let m = Mixer(seconds: DURATION)
     let beat = 0.6
     let bar = beat * 4
+    let resolve = 27.0 + SHIFT
 
-    // Harmony: Fmaj7 · G6 · Em7 · Am9, three times, resolving to Cmaj9 for the outro.
+    // Harmony: Fmaj7 · G6 · Em7 · Am9, round and round, resolving to Cmaj9 for the outro.
     let chords: [[Double]] = [[53, 57, 60, 64, 69], [55, 59, 62, 64, 67], [52, 55, 59, 62, 67], [57, 60, 64, 67, 71]]
     let roots: [Double] = [41, 43, 40, 45]
     var times: [(Double, [Double], Double, Double)] = []
-    for b in 0..<11 {
+    let bars = Int(resolve / bar)
+    for b in 0..<bars {
         let t0 = Double(b) * bar
-        let dur = b == 10 ? 27.0 - t0 : bar
+        let dur = b == bars - 1 ? resolve - t0 : bar
         times.append((t0, chords[b % 4], roots[b % 4], dur))
     }
-    times.append((27.0, [48, 55, 59, 62, 64, 71], 36, 3.0))
+    times.append((resolve, [48, 55, 59, 62, 64, 71], 36, DURATION - resolve))
 
     // Kicks from the first scene change to the outro, with sidechain.
     var kicks: [Double] = []
     var k = 3.6
-    while k < 26.99 { kicks.append(k); k += beat }
+    while k < resolve - 0.01 { kicks.append(k); k += beat }
     m.sidechain(at: kicks)
 
     for (t0, notes, root, dur) in times {
-        let isLast = t0 >= 27
+        let isLast = t0 >= resolve
         for (i, n) in notes.enumerated() {
             let pan = Float(i % 2 == 0 ? -0.35 : 0.35) * Float(i) / Float(notes.count)
             m.add(t0, m.pad(n, dur, attack: t0 == 0 ? 1.4 : 0.5, release: isLast ? 2.0 : 0.9, bright: isLast ? 1.7 : 1.35),
@@ -1767,7 +2902,7 @@ func soundtrack() -> [Int16] {
             } else {
                 for b in 0..<4 {
                     let tb = t0 + Double(b) * beat
-                    guard tb >= 3.59, tb < 27 else { continue }
+                    guard tb >= 3.59, tb < resolve else { continue }
                     m.add(tb, m.bass(root, beat * 0.9), gain: 0.22, send: 0)
                 }
             }
@@ -1779,16 +2914,16 @@ func soundtrack() -> [Int16] {
     for t in kicks { m.add(t, m.kick(), gain: 0.4, send: 0) }
     // Hats on the off-beats, claps on 2 and 4, from the third scene.
     var h = 8.7
-    while h < 27 { m.add(h, m.hat(), gain: 0.2, pan: 0.25, send: 0.08); h += beat }
+    while h < resolve { m.add(h, m.hat(), gain: 0.2, pan: 0.25, send: 0.08); h += beat }
     var c = 9.0
-    while c < 27 { m.add(c, m.clap(), gain: 0.26, pan: -0.1, send: 0.25); c += beat * 2 }
+    while c < resolve { m.add(c, m.clap(), gain: 0.26, pan: -0.1, send: 0.25); c += beat * 2 }
 
-    // Plucked arpeggio through a ping-pong echo, scenes 3–5.
+    // Plucked arpeggio through a ping-pong echo, from scene 3 to "make it yours".
     let arpPattern = [0, 2, 4, 3, 1, 3, 4, 2]
     var arp = [Float](repeating: 0, count: m.count)
     var a = 8.4
     var step = 0
-    while a < 23.4 {
+    while a < 47.0 {
         let barIndex = min(times.count - 1, Int(a / bar))
         let chord = times[barIndex].1
         let note = chord[arpPattern[step % arpPattern.count] % chord.count] + 12
@@ -1811,23 +2946,25 @@ func soundtrack() -> [Int16] {
     m.add(0.92, m.pluck(84, decay: 9), gain: 0.22, send: 0.4)
     m.add(0.92, m.kick(), gain: 0.22, send: 0)
     m.add(1.22, m.bell([2637, 3520], decay: 3), gain: 0.07, pan: 0.3, send: 0.6)
-    for t in [3.2, 8.4, 13.8, 18.4, 23.2, 27.0] {
+    for t in [3.2, 8.4, 13.8, 18.4, 23.2, 28.2, 33.2, 37.6, 42.0, 46.8, resolve] {
         m.add(t, m.whoosh(0.55, from: 4500, to: 500, q: 1.4), gain: 0.3, send: 0.35)
     }
     // Reverse swell into the outro, then a soft impact.
-    m.add(26.0, m.whoosh(1.0, from: 200, to: 7000, q: 3), gain: 0.2, send: 0.5)
-    m.add(27.0, m.kick(), gain: 0.45, send: 0)
-    m.add(27.0, m.bell([523.25, 783.99, 1046.5], decay: 1.2), gain: 0.1, send: 0.8)
-    m.add(28.15, m.pluck(84, decay: 9), gain: 0.2, send: 0.4)
-    m.add(28.42, m.bell([2637, 3520], decay: 3), gain: 0.06, pan: 0.3, send: 0.6)
+    m.add(resolve - 1.0, m.whoosh(1.0, from: 200, to: 7000, q: 3), gain: 0.2, send: 0.5)
+    m.add(resolve, m.kick(), gain: 0.45, send: 0)
+    m.add(resolve, m.bell([523.25, 783.99, 1046.5], decay: 1.2), gain: 0.1, send: 0.8)
+    m.add(resolve + 1.15, m.pluck(84, decay: 9), gain: 0.2, send: 0.4)
+    m.add(resolve + 1.42, m.bell([2637, 3520], decay: 3), gain: 0.06, pan: 0.3, send: 0.6)
 
-    // Scene 2: ⌥ down, the border snaps on, C, the copy chime, the chip lands.
+    // Scene 2: ⌥ down, the border snaps on, C, the copy chime, Snap hops to the menu bar.
     let copyChime = { m.bell([1318.5, 1975.5], decay: 4) }
     m.add(4.05, m.keyClick(), gain: 0.35, pan: -0.2, send: 0.1)
     m.add(4.95, m.tick(1500), gain: 0.18, send: 0.2)
     m.add(6.3, m.keyClick(), gain: 0.35, pan: 0.2, send: 0.1)
     m.add(6.4, copyChime(), gain: 0.12, send: 0.5)
-    m.add(6.65, m.whoosh(0.7, from: 800, to: 4000, q: 2), gain: 0.1, pan: 0.4, send: 0.3)
+    m.add(6.4, m.glide(from: 330, to: 780, dur: 0.12, decay: 9), gain: 0.12, send: 0.3)
+    m.add(6.8, m.whoosh(0.45, from: 900, to: 4500, q: 2), gain: 0.1, pan: 0.4, send: 0.3)
+    m.add(7.4, m.glide(from: 620, to: 300, dur: 0.07, decay: 26), gain: 0.16, pan: 0.6, send: 0.3)
     m.add(7.42, m.tick(2600), gain: 0.1, pan: 0.6, send: 0.4)
     // Scene 3: a tick for each hop, rising.
     for (i, t) in [9.05, 10.0, 10.95, 11.9, 12.85].enumerated() {
@@ -1850,13 +2987,61 @@ func soundtrack() -> [Int16] {
         m.add(s + 0.42, m.keyClick(), gain: 0.3, send: 0.1)
         m.add(s + 0.5, m.bell([1567.98 * pow(2, Double([0, 2, 4, 7][i]) / 12)], decay: 6), gain: 0.07, send: 0.5)
     }
-    // Scene 6: a rising pentatonic run as the keys light up.
-    m.add(23.7, m.keyClick(), gain: 0.3, send: 0.1)
-    let penta: [Double] = [72, 74, 76, 79, 81, 84, 86]
-    for i in 0..<7 {
-        let t = 23.95 + Double(i) * 0.3
-        m.add(t, m.keyClick(), gain: 0.22, pan: Float(i - 3) * 0.12, send: 0.1)
-        m.add(t, m.pluck(penta[i], decay: 7), gain: 0.13, pan: Float(i - 3) * 0.12, send: 0.45)
+    // Scene 6: R, the box stretching out, the text being read, C.
+    let box = S6.start
+    m.add(box + S6.rAt - 0.06, m.keyClick(), gain: 0.33, send: 0.1)
+    m.add(box + S6.rAt, m.tick(1500), gain: 0.14, send: 0.2)
+    m.add(box + S6.dragFrom, m.whoosh(0.95, from: 500, to: 3200, q: 2), gain: 0.09, pan: 0.2, send: 0.3)
+    for (i, n) in [84.0, 88, 91, 96].enumerated() {
+        m.add(box + S6.scanFrom + 0.05 + Double(i) * 0.12, m.pluck(n, decay: 12), gain: 0.07, pan: Float(i) * 0.15 - 0.2, send: 0.5)
+    }
+    m.add(box + S6.cAt - 0.06, m.keyClick(), gain: 0.33, send: 0.1)
+    m.add(box + S6.cAt, copyChime(), gain: 0.12, send: 0.5)
+    // Scene 7: ⇥ to fields, copy, F, and each field filling in.
+    let forms = S7.start
+    m.add(forms + S7.tabAt - 0.06, m.keyClick(), gain: 0.3, send: 0.1)
+    m.add(forms + S7.tabAt, m.bell([1760], decay: 6), gain: 0.06, send: 0.5)
+    m.add(forms + S7.copyAt - 0.06, m.keyClick(), gain: 0.33, send: 0.1)
+    m.add(forms + S7.copyAt, copyChime(), gain: 0.11, send: 0.5)
+    m.add(forms + S7.fillAt - 0.06, m.keyClick(), gain: 0.33, send: 0.1)
+    for (i, n) in [72.0, 76, 79, 84].enumerated() {
+        m.add(forms + S7.fillStart(i), m.pluck(n, decay: 9), gain: 0.12, pan: Float(i) * 0.12, send: 0.4)
+    }
+    m.add(forms + 3.95, m.bell([1318.5, 1975.5, 2637], decay: 4), gain: 0.08, send: 0.6)
+    // Scene 8: D, the panel, the two changes.
+    let cmp = S8.start
+    m.add(cmp + S8.dAt - 0.06, m.keyClick(), gain: 0.33, send: 0.1)
+    m.add(cmp + S8.panelAt, m.whoosh(0.4, from: 2600, to: 700, q: 2), gain: 0.1, send: 0.3)
+    m.add(cmp + 1.85, m.pluck(79, decay: 10), gain: 0.11, pan: -0.2, send: 0.4)
+    m.add(cmp + 2.15, m.pluck(83, decay: 10), gain: 0.11, pan: 0.2, send: 0.4)
+    // Scene 9: P, Live, the editor sliding over, the build turning green.
+    let live = S9.start
+    m.add(live + S9.pAt - 0.06, m.keyClick(), gain: 0.33, send: 0.1)
+    m.add(live + S9.pAt + 0.05, m.whoosh(0.5, from: 700, to: 3500, q: 2), gain: 0.09, pan: 0.4, send: 0.3)
+    m.add(live + S9.liveAt, m.tick(2600), gain: 0.12, pan: 0.4, send: 0.3)
+    m.add(live + S9.coverAt, m.whoosh(0.55, from: 3000, to: 400, q: 1.6), gain: 0.12, send: 0.3)
+    m.add(live + 2.3, m.tick(1800), gain: 0.07, pan: 0.4, send: 0.3)
+    m.add(live + S9.changeAt, m.bell([1318.5, 1975.5, 2637], decay: 3.5), gain: 0.1, pan: 0.3, send: 0.6)
+    m.add(live + S9.changeAt, m.pluck(84, decay: 8), gain: 0.12, pan: 0.3, send: 0.4)
+    // Scene 10: choosing a key, a format, a mascot; hats on.
+    let yours = S10.start
+    for (i, at) in S10.keySteps.enumerated() {
+        m.add(yours + at, m.tick(1400 + Double(i) * 150), gain: 0.1, pan: -0.4, send: 0.25)
+    }
+    m.add(yours + 1.1, m.pluck(81, decay: 9), gain: 0.1, send: 0.4)
+    m.add(yours + 2.5, m.pluck(86, decay: 9), gain: 0.1, send: 0.4)
+    for (i, at) in S10.mascotSteps.enumerated() {
+        m.add(yours + at, m.pluck([72.0, 74, 76, 79][i], decay: 11), gain: 0.06, pan: 0.4, send: 0.4)
+    }
+    m.add(yours + S10.hatAt, m.glide(from: 330, to: 780, dur: 0.12, decay: 9), gain: 0.1, pan: 0.4, send: 0.3)
+    m.add(yours + S10.hatAt + 0.1, m.bell([2093, 2637], decay: 4), gain: 0.05, pan: 0.4, send: 0.6)
+    // Scene 11: a rising pentatonic run as the keys light up.
+    m.add(23.7 + SHIFT, m.keyClick(), gain: 0.3, send: 0.1)
+    let penta: [Double] = [72, 74, 76, 79, 81, 84, 86, 88]
+    for i in 0..<ActionsScene.keys.count {
+        let t = ActionsScene.at(i) + SHIFT
+        m.add(t, m.keyClick(), gain: 0.22, pan: Float(i - 4) * 0.11, send: 0.1)
+        m.add(t, m.pluck(penta[i], decay: 7), gain: 0.13, pan: Float(i - 4) * 0.11, send: 0.45)
     }
 
     m.reverb(mix: 0.16)
@@ -1925,6 +3110,8 @@ func main() {
     }
 
     let out = args.first ?? "Grab-promo.mp4"
+    // x264 quality: lower is better and bigger. 18 keeps the 1080p60 master under GitHub's 100 MB.
+    let crf = args.count > 1 ? args[1] : "18"
     let wav = NSTemporaryDirectory() + "grab-promo.wav"
     let started = Date()
     print("▸ Soundtrack")
@@ -1938,7 +3125,7 @@ func main() {
         "-f", "rawvideo", "-pix_fmt", "bgra", "-s", "\(Int(W))x\(Int(H))", "-r", "\(FPS)", "-i", "-",
         "-i", wav,
         "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,noise=c0s=3:c0f=t",
-        "-c:v", "libx264", "-preset", "slow", "-crf", "14", "-profile:v", "high",
+        "-c:v", "libx264", "-preset", "slow", "-crf", crf, "-profile:v", "high",
         "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
         "-c:a", "aac", "-b:a", "256k",
         "-movflags", "+faststart", "-shortest", out,
