@@ -130,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         overlay?.applySharing()
         Updater.shared.applySettings()
+        if NSApp.appearance != settings.appearance.nsAppearance { NSApp.appearance = settings.appearance.nsAppearance }
         if settings.paused, session?.armed == true {
             keyTap.suppressCurrentHold()
             session.disarm(cancelled: true)

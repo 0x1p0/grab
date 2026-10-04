@@ -53,14 +53,23 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
 
     private func present(_ w: NSWindow?) {
         guard let w else { return }
+        // While a real window is open, Grab is a real app: in the Dock and ⌘Tab, with menus.
+        AppMenu.install()
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         NSApp.activate()
         w.makeKeyAndOrderFront(nil)
         w.orderFrontRegardless()
     }
 
     func windowWillClose(_ notification: Notification) {
-        if (notification.object as? NSWindow) === onboarding {
+        let closing = notification.object as? NSWindow
+        if closing === onboarding {
             Settings.shared.hasOnboarded = true
+        }
+        // Back to the menu bar once the last one closes.
+        let stillOpen = [onboarding, settings].contains { w in w != nil && w !== closing && w?.isVisible == true }
+        if !stillOpen {
+            DispatchQueue.main.async { NSApp.setActivationPolicy(.accessory) }
         }
     }
 }

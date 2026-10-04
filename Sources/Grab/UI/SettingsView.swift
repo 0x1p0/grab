@@ -76,6 +76,16 @@ private struct GeneralPane: View {
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.04)))
             .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5))
 
+            SettingsCard(title: "Appearance") {
+                HStack(spacing: 14) {
+                    ForEach(AppAppearance.allCases) { a in
+                        AppearanceTile(appearance: a, selected: settings.appearance == a) { settings.appearance = a }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(14)
+            }
+
             SettingsCard(title: "Grabbing") {
                 TriggerPicker(selection: $settings.trigger)
                 RowDivider()
@@ -113,6 +123,94 @@ private struct GeneralPane: View {
             HStack {
                 Spacer()
                 Button("Quit Grab") { NSApp.terminate(nil) }.controlSize(.small)
+            }
+        }
+    }
+}
+
+/// A little window in each look, like the Appearance choice in System Settings.
+private struct AppearanceTile: View {
+    let appearance: AppAppearance
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 7) {
+                preview
+                    .frame(width: 92, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
+                    .padding(3)
+                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(selected ? Theme.accent : .clear, lineWidth: 2.5))
+                Text(appearance.title).font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .primary : .secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder private var preview: some View {
+        switch appearance {
+        case .light: MiniWindow(dark: false)
+        case .dark: MiniWindow(dark: true)
+        case .system:
+            ZStack {
+                MiniWindow(dark: false)
+                MiniWindow(dark: true).mask(HalfMask())
+            }
+        }
+    }
+
+    /// The right half, cut on a slant.
+    struct HalfMask: Shape {
+        func path(in r: CGRect) -> Path {
+            var p = Path()
+            p.move(to: CGPoint(x: r.midX + 10, y: r.minY))
+            p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+            p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
+            p.addLine(to: CGPoint(x: r.midX - 10, y: r.maxY))
+            p.closeSubpath()
+            return p
+        }
+    }
+
+    struct MiniWindow: View {
+        let dark: Bool
+        var body: some View {
+            let bg = dark ? Color(hex: 0x1E1E22) : Color(hex: 0xF4F4F7)
+            let side = dark ? Color(hex: 0x2B2B31) : Color(hex: 0xE4E4EA)
+            let card = dark ? Color(hex: 0x34343B) : Color.white
+            let line = dark ? Color.white.opacity(0.18) : Color.black.opacity(0.12)
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 2.5) {
+                        ForEach([0xFF5F57, 0xFEBC2E, 0x28C840], id: \.self) { c in Circle().fill(Color(hex: UInt32(c))).frame(width: 4, height: 4) }
+                    }
+                    .padding(.bottom, 3)
+                    ForEach(0..<4, id: \.self) { i in
+                        HStack(spacing: 3) {
+                            RoundedRectangle(cornerRadius: 1.5).fill(i == 0 ? Theme.accent : line).frame(width: 6, height: 6)
+                            Capsule().fill(line).frame(width: 12, height: 3)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(6)
+                .frame(width: 34, alignment: .leading)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .background(side)
+                VStack(alignment: .leading, spacing: 4) {
+                    Capsule().fill(line).frame(width: 26, height: 4).padding(.bottom, 2)
+                    RoundedRectangle(cornerRadius: 3).fill(card).frame(height: 14)
+                        .overlay(alignment: .trailing) { Capsule().fill(Theme.accent).frame(width: 9, height: 5).padding(.trailing, 4) }
+                    RoundedRectangle(cornerRadius: 3).fill(card).frame(height: 14)
+                    Spacer(minLength: 0)
+                }
+                .padding(6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(bg)
             }
         }
     }
@@ -358,7 +456,11 @@ private struct FormatsPane: View {
                     HStack(spacing: 10) {
                         HStack(spacing: 6) {
                             RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color(nsColor: sample.nsColor)).frame(width: 14, height: 14)
-                            Text(sample.formatted(settings.colorFormat)).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
+                            Text(sample.formatted(settings.colorFormat))
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .fixedSize()
                         }
                         Picker("", selection: $settings.colorFormat) {
                             ForEach(ColorFormat.allCases) { Text($0.title).tag($0) }

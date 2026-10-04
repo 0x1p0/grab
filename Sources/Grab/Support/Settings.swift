@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Observation
 
 extension Notification.Name {
@@ -21,6 +21,28 @@ struct GrabEvent {
     var appended: Bool
     var format: String?
     var pixels: Int
+}
+
+/// Light, dark, or whatever macOS is set to.
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: "Auto"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
 }
 
 /// What you hold to grab.
@@ -119,6 +141,8 @@ final class Settings {
     var mascot: String { didSet { save("mascot", mascot) } }
     /// Mascots dress up for Halloween and the holidays.
     var seasonal: Bool { didSet { save("seasonal", seasonal) } }
+    /// Grab's own look: follow the system, or always light or dark.
+    var appearance: AppAppearance { didSet { save("appearance", appearance.rawValue) } }
     /// On Macs with a notch, grabs are carried into it instead of to the menu bar icon.
     var notchCatch: Bool { didSet { save("notchCatch", notchCatch) } }
     /// The mascot peeks out from under the menu bar while ⌥ is held.
@@ -164,6 +188,7 @@ final class Settings {
             "appRules": [String: Int](),
             "mascot": "snap",
             "seasonal": true,
+            "appearance": AppAppearance.system.rawValue,
             "notchCatch": true,
             "mascotPeek": true,
             "wearOutfits": true,
@@ -198,6 +223,7 @@ final class Settings {
         appRules = d.dictionary(forKey: "appRules") as? [String: Int] ?? [:]
         mascot = d.string(forKey: "mascot") ?? "snap"
         seasonal = d.bool(forKey: "seasonal")
+        appearance = AppAppearance(rawValue: d.string(forKey: "appearance") ?? "") ?? .system
         notchCatch = d.bool(forKey: "notchCatch")
         mascotPeek = d.bool(forKey: "mascotPeek")
         wearOutfits = d.bool(forKey: "wearOutfits")
