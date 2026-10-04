@@ -1512,7 +1512,7 @@ final class Session {
             default:
                 // Rounded corners, so the image pastes looking finished.
                 if Settings.shared.roundImageCorners, let rounded = ImageTools.rounded(img, pointSize: size) {
-                    return .success(.image(rounded, pointSize: size))
+                    return .success(.image(rounded.image, pointSize: rounded.pointSize))
                 }
             }
         default: break

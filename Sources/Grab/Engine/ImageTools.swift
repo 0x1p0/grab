@@ -68,22 +68,127 @@ enum ImageTools {
         return out.map { RGBAColor(r: $0.x, g: $0.y, b: $0.z) }
     }
 
-    /// The image with softly rounded corners (transparent outside), about 10 points at the
-    /// image's own scale, never more than 6% of its shorter side. Nil for tiny images.
-    static func rounded(_ image: CGImage, pointSize: CGSize, points: CGFloat = 10) -> CGImage? {
-        let w = image.width, h = image.height
-        guard min(w, h) >= 48 else { return nil }
-        let scale = pointSize.width > 0 ? CGFloat(w) / pointSize.width : 2
-        let radius = min(points * max(scale, 1), CGFloat(min(w, h)) * 0.06)
+    /// The image with smooth, Apple-style rounded corners (transparent outside).
+    ///
+    /// What's under the pointer is often already rounded (video players, cards, avatars),
+    /// so its rectangle carries bits of the page behind those corners. That background is
+    /// trimmed off the edges first, and the new corners are cut at least as round as the
+    /// source's own, so no slivers of the page are left showing.
+    static func rounded(_ image: CGImage, pointSize: CGSize, points: CGFloat = 12) -> (image: CGImage, pointSize: CGSize)? {
+        guard min(image.width, image.height) >= 48, let px = Pixels(image) else { return nil }
+        let scale = pointSize.width > 0 ? CGFloat(image.width) / pointSize.width : 2
+
+        // A background showing in all four corners is the page behind a rounded element.
+        var crop = (top: 0, left: 0, bottom: 0, right: 0)
+        var sourceRadius: CGFloat = 0
+        let corners = [px.at(0, 0), px.at(px.w - 1, 0), px.at(0, px.h - 1), px.at(px.w - 1, px.h - 1)]
+        if let bg = corners.first, corners.allSatisfy({ Pixels.near($0, bg, 18) }) {
+            // Edges that are almost all background are bleed: trim them (a few pixels at most).
+            func edge(_ points: [(Int, Int)]) -> Bool {
+                points.filter { Pixels.near(px.at($0.0, $0.1), bg, 18) }.count * 10 >= points.count * 9
+            }
+            let maxTrim = 4
+            while crop.top < maxTrim, edge((crop.left..<(px.w - crop.right)).map { ($0, crop.top) }) { crop.top += 1 }
+            while crop.bottom < maxTrim, edge((crop.left..<(px.w - crop.right)).map { ($0, px.h - 1 - crop.bottom) }) { crop.bottom += 1 }
+            while crop.left < maxTrim, edge((crop.top..<(px.h - crop.bottom)).map { (crop.left, $0) }) { crop.left += 1 }
+            while crop.right < maxTrim, edge((crop.top..<(px.h - crop.bottom)).map { (px.w - 1 - crop.right, $0) }) { crop.right += 1 }
+            // How round the source is: walk in diagonally from each corner until the content
+            // starts. For a circular corner of radius R, that's R × (1 − 1/√2) pixels in on each axis.
+            let x0 = crop.left, y0 = crop.top, x1 = px.w - 1 - crop.right, y1 = px.h - 1 - crop.bottom
+            let depthPerRadius: CGFloat = 1 - 1 / 2.0.squareRoot()
+            let limit = Int(CGFloat(min(x1 - x0, y1 - y0)) * 0.2 * depthPerRadius)
+            var depths: [Int] = []
+            for (cx, cy, dx, dy) in [(x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)] {
+                var d = 0
+                while d < limit, Pixels.near(px.at(cx + dx * d, cy + dy * d), bg, 18) { d += 1 }
+                depths.append(d)
+            }
+            if depths.contains(where: { $0 >= limit }) {
+                // The "background" runs deep into the picture: it's the picture itself
+                // (a flat color, a product on white). Leave it whole.
+                crop = (0, 0, 0, 0)
+            } else if let deepest = depths.max() {
+                sourceRadius = CGFloat(deepest) / depthPerRadius
+            }
+        }
+
+        let w = px.w - crop.left - crop.right, h = px.h - crop.top - crop.bottom
+        guard w >= 48, h >= 48 else { return nil }
+        let short = CGFloat(min(w, h))
+        // Our corners, or rounder than the source's own so they fully cover its background.
+        // A continuous corner of radius r cuts 0.214 r deep at 45°, a circular one of radius
+        // R cuts 0.293 R, hence the 1.4.
+        let radius = min(max(points * max(scale, 1), sourceRadius > 0 ? sourceRadius * 1.4 + 2 : 0), short * 0.3)
         guard radius >= 2, let space = CGColorSpace(name: CGColorSpace.sRGB),
               let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         let rect = CGRect(x: 0, y: 0, width: w, height: h)
-        ctx.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.addPath(continuousRoundedRect(rect, radius: radius))
         ctx.clip()
         ctx.interpolationQuality = .none
-        ctx.draw(image, in: rect)
-        return ctx.makeImage()
+        // CG's origin is bottom-left: shift so the cropped region lands in the context.
+        ctx.draw(image, in: CGRect(x: -CGFloat(crop.left), y: -CGFloat(crop.bottom), width: CGFloat(px.w), height: CGFloat(px.h)))
+        guard let out = ctx.makeImage() else { return nil }
+        let k = pointSize.width > 0 ? pointSize.width / CGFloat(px.w) : 0.5
+        return (out, CGSize(width: CGFloat(w) * k, height: CGFloat(h) * k))
+    }
+
+    /// A rounded rectangle with Apple-style continuous corners: each corner is a superellipse
+    /// that eases into the straight edge instead of meeting it with a circle's sudden bend.
+    static func continuousRoundedRect(_ r: CGRect, radius: CGFloat) -> CGPath {
+        let e = min(radius * 1.528, min(r.width, r.height) / 2)
+        let n: CGFloat = 4.6, steps = 24
+        let p = CGMutablePath()
+        // Corner centers and the directions to their edges.
+        let corners: [(CGPoint, CGFloat, CGFloat)] = [
+            (CGPoint(x: r.maxX - e, y: r.minY + e), 1, -1),
+            (CGPoint(x: r.maxX - e, y: r.maxY - e), 1, 1),
+            (CGPoint(x: r.minX + e, y: r.maxY - e), -1, 1),
+            (CGPoint(x: r.minX + e, y: r.minY + e), -1, -1),
+        ]
+        for (i, (c, sx, sy)) in corners.enumerated() {
+            for k in 0...steps {
+                // Sweep each quarter so the outline goes around in one direction.
+                let t = CGFloat(k) / CGFloat(steps) * .pi / 2
+                let (u, v): (CGFloat, CGFloat) = i % 2 == 0 ? (sin(t), cos(t)) : (cos(t), sin(t))
+                let pt = CGPoint(x: c.x + sx * e * pow(u, 2 / n), y: c.y + sy * e * pow(v, 2 / n))
+                if i == 0 && k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+            }
+        }
+        p.closeSubpath()
+        return p
+    }
+
+    /// Read access to an image's pixels as sRGB bytes, top row first.
+    struct Pixels {
+        let w: Int, h: Int
+        private let data: [UInt8]
+
+        init?(_ image: CGImage) {
+            let width = image.width, height = image.height
+            var buf = [UInt8](repeating: 0, count: width * height * 4)
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+            let ok = buf.withUnsafeMutableBytes { b -> Bool in
+                guard let ctx = CGContext(data: b.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+                return true
+            }
+            guard ok else { return nil }
+            w = width
+            h = height
+            data = buf
+        }
+
+        /// (r, g, b, a) at column x, row y from the top.
+        func at(_ x: Int, _ y: Int) -> (Int, Int, Int, Int) {
+            let i = (min(max(y, 0), h - 1) * w + min(max(x, 0), w - 1)) * 4
+            return (Int(data[i]), Int(data[i + 1]), Int(data[i + 2]), Int(data[i + 3]))
+        }
+
+        static func near(_ a: (Int, Int, Int, Int), _ b: (Int, Int, Int, Int), _ tol: Int) -> Bool {
+            abs(a.0 - b.0) <= tol && abs(a.1 - b.1) <= tol && abs(a.2 - b.2) <= tol && abs(a.3 - b.3) <= tol
+        }
     }
 
     static func pngData(_ image: CGImage) -> Data? {

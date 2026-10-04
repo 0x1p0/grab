@@ -230,22 +230,51 @@ final class StatsTests: XCTestCase {
 }
 
 final class RoundedImageTests: XCTestCase {
-    func testCornersBecomeTransparent() throws {
-        let ctx = CGContext(data: nil, width: 200, height: 120, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+    private func image(_ w: Int, _ h: Int, _ draw: (CGContext) -> Void) -> CGImage {
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: 200, height: 120))
-        let img = try XCTUnwrap(ctx.makeImage())
+        draw(ctx)
+        return ctx.makeImage()!
+    }
+
+    func testCornersBecomeTransparent() throws {
+        let img = image(200, 120) { $0.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1)); $0.fill(CGRect(x: 0, y: 0, width: 200, height: 120)) }
         let r = try XCTUnwrap(ImageTools.rounded(img, pointSize: CGSize(width: 100, height: 60)))
-        XCTAssertEqual(r.width, 200)
-        let rep = NSBitmapImageRep(cgImage: r)
+        XCTAssertEqual(r.image.width, 200)
+        let rep = NSBitmapImageRep(cgImage: r.image)
         XCTAssertEqual(rep.colorAt(x: 0, y: 0)?.alphaComponent ?? 1, 0, accuracy: 0.01)
         XCTAssertEqual(rep.colorAt(x: 199, y: 119)?.alphaComponent ?? 1, 0, accuracy: 0.01)
         XCTAssertEqual(rep.colorAt(x: 100, y: 60)?.alphaComponent ?? 0, 1, accuracy: 0.01)
         XCTAssertEqual(rep.colorAt(x: 100, y: 0)?.alphaComponent ?? 0, 1, accuracy: 0.01)
-        // Tiny images are left alone.
-        let tiny = CGContext(data: nil, width: 20, height: 20, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        let tiny = image(20, 20) { _ in }
         XCTAssertNil(ImageTools.rounded(tiny, pointSize: CGSize(width: 10, height: 10)))
+    }
+
+    /// A video player that's already rounded, captured with the white page behind its corners
+    /// and a hairline of page along one edge: no white may be left in the result.
+    func testNoPageLeftInTheCorners() throws {
+        let w = 640, h = 360
+        let img = image(w, h) { ctx in
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            let player = CGRect(x: 2, y: 0, width: w - 2, height: h)   // 2 px of page down the left edge
+            ctx.addPath(CGPath(roundedRect: player, cornerWidth: 30, cornerHeight: 30, transform: nil))
+            ctx.setFillColor(CGColor(red: 0.25, green: 0.24, blue: 0.27, alpha: 1))
+            ctx.fillPath()
+        }
+        let r = try XCTUnwrap(ImageTools.rounded(img, pointSize: CGSize(width: 320, height: 180)))
+        XCTAssertEqual(r.image.width, w - 2, "the hairline of page is trimmed")
+        XCTAssertEqual(r.pointSize.width, CGFloat(w - 2) / 2, accuracy: 0.01)
+        let px = try XCTUnwrap(ImageTools.Pixels(r.image))
+        var whiteLeft = 0
+        for y in 0..<px.h {
+            for x in 0..<px.w {
+                let p = px.at(x, y)
+                // Visible and close to white: a sliver of the page.
+                if p.3 > 40 && p.0 > 200 && p.1 > 200 && p.2 > 200 { whiteLeft += 1 }
+            }
+        }
+        XCTAssertEqual(whiteLeft, 0)
+        XCTAssertEqual(px.at(px.w / 2, px.h / 2).3, 255)
     }
 }
