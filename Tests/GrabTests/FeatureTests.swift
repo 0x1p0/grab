@@ -278,6 +278,25 @@ final class RoundedImageTests: XCTestCase {
         XCTAssertEqual(px.at(px.w / 2, px.h / 2).3, 255)
     }
 
+    /// A letterboxed video: dark bars around the picture that end a little way in. Those dark
+    /// corners are the picture, not a page behind a rounded player (a rounded corner leaves
+    /// the page along each edge for only about its radius), so the corners stay a soft 12 pt.
+    func testDarkFramesKeepSoftCorners() throws {
+        let w = 1000, h = 560, bar = 28
+        let img = image(w, h) { ctx in
+            ctx.setFillColor(CGColor(srgbRed: 0.075, green: 0.075, blue: 0.075, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            ctx.setFillColor(CGColor(srgbRed: 0.6, green: 0.7, blue: 0.8, alpha: 1))
+            ctx.fill(CGRect(x: bar, y: bar, width: w - bar * 2, height: h - bar * 2))
+        }
+        let r = try XCTUnwrap(ImageTools.rounded(img, pointSize: CGSize(width: 500, height: 280)))
+        let px = try XCTUnwrap(ImageTools.Pixels(r.image))
+        // A 12 pt continuous corner at 2× cuts about 5 px in at 45°.
+        var d = 0
+        while px.at(d, d).3 < 128 { d += 1 }
+        XCTAssertLessThanOrEqual(d, 7)
+    }
+
     /// Where the ink is in a picture: (left, top, right, bottom) margins in pixels.
     private func margins(_ px: ImageTools.Pixels, from bg: (Int, Int, Int, Int)) -> (Int, Int, Int, Int) {
         var minX = px.w, maxX = -1, minY = px.h, maxY = -1

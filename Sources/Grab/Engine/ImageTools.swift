@@ -80,13 +80,16 @@ enum ImageTools {
         let scale = pointSize.width > 0 ? CGFloat(image.width) / pointSize.width : 2
 
         // A background showing in all four corners is the page behind a rounded element.
+        // Pages are one exact color, so the match is strict: dark video frames and photos
+        // with dark corners are not a page.
         var crop = (top: 0, left: 0, bottom: 0, right: 0)
         var sourceRadius: CGFloat = 0
         let corners = [px.at(0, 0), px.at(px.w - 1, 0), px.at(0, px.h - 1), px.at(px.w - 1, px.h - 1)]
-        if trimBleed, let bg = corners.first, corners.allSatisfy({ Pixels.near($0, bg, 18) }) {
+        if trimBleed, let bg = corners.first, corners.allSatisfy({ Pixels.near($0, bg, 8) }) {
+            func isPage(_ x: Int, _ y: Int) -> Bool { Pixels.near(px.at(x, y), bg, 8) }
             // Edges that are almost all background are bleed: trim them (a few pixels at most).
             func edge(_ points: [(Int, Int)]) -> Bool {
-                points.filter { Pixels.near(px.at($0.0, $0.1), bg, 18) }.count * 10 >= points.count * 9
+                points.filter { isPage($0.0, $0.1) }.count * 10 >= points.count * 9
             }
             let maxTrim = 4
             while crop.top < maxTrim, edge((crop.left..<(px.w - crop.right)).map { ($0, crop.top) }) { crop.top += 1 }
@@ -94,22 +97,33 @@ enum ImageTools {
             while crop.left < maxTrim, edge((crop.top..<(px.h - crop.bottom)).map { (crop.left, $0) }) { crop.left += 1 }
             while crop.right < maxTrim, edge((crop.top..<(px.h - crop.bottom)).map { (px.w - 1 - crop.right, $0) }) { crop.right += 1 }
             // How round the source is: walk in diagonally from each corner until the content
-            // starts. For a circular corner of radius R, that's R × (1 − 1/√2) pixels in on each axis.
+            // starts. For a circular corner of radius R, that's R × (1 − 1/√2) pixels in on each
+            // axis, and the page runs about R along both edges. A corner only counts when it
+            // has that shape; anything else is the picture, not the page.
             let x0 = crop.left, y0 = crop.top, x1 = px.w - 1 - crop.right, y1 = px.h - 1 - crop.bottom
             let depthPerRadius: CGFloat = 1 - 1 / 2.0.squareRoot()
             let limit = Int(CGFloat(min(x1 - x0, y1 - y0)) * 0.2 * depthPerRadius)
-            var depths: [Int] = []
+            var radii: [CGFloat] = []
+            var deep = false
             for (cx, cy, dx, dy) in [(x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)] {
                 var d = 0
-                while d < limit, Pixels.near(px.at(cx + dx * d, cy + dy * d), bg, 18) { d += 1 }
-                depths.append(d)
+                while d < limit, isPage(cx + dx * d, cy + dy * d) { d += 1 }
+                if d >= limit { deep = true; break }
+                guard d >= 2 else { continue }
+                let r = CGFloat(d) / depthPerRadius
+                let reach = Int(r * 1.6) + 3
+                var a = 0, b = 0
+                while a < reach, isPage(cx + dx * a, cy) { a += 1 }
+                while b < reach, isPage(cx, cy + dy * b) { b += 1 }
+                let fits = { (run: Int) in CGFloat(run) >= r * 0.5 && run < reach }
+                if fits(a) && fits(b) { radii.append(r) }
             }
-            if depths.contains(where: { $0 >= limit }) {
-                // The "background" runs deep into the picture: it's the picture itself
-                // (a flat color, a product on white). Leave it whole.
-                crop = (0, 0, 0, 0)
-            } else if let deepest = depths.max() {
-                sourceRadius = CGFloat(deepest) / depthPerRadius
+            if deep || radii.count < 2 {
+                // The "background" runs into the picture (a flat color, a product on white),
+                // or the corners aren't round: leave the edges whole.
+                if deep { crop = (0, 0, 0, 0) }
+            } else {
+                sourceRadius = radii.max() ?? 0
             }
         }
 
@@ -119,7 +133,8 @@ enum ImageTools {
         // Our corners, or rounder than the source's own so they fully cover its background.
         // A continuous corner of radius r cuts 0.214 r deep at 45°, a circular one of radius
         // R cuts 0.293 R, hence the 1.4.
-        let radius = min(max(points * max(scale, 1), sourceRadius > 0 ? sourceRadius * 1.4 + 2 : 0), short * 0.3)
+        // Never more than 28 points: soft, not bubbly.
+        let radius = min(max(points * max(scale, 1), sourceRadius > 0 ? sourceRadius * 1.4 + 2 : 0), 28 * max(scale, 1), short * 0.3)
         guard radius >= 2, let space = CGColorSpace(name: CGColorSpace.sRGB),
               let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
