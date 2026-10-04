@@ -90,7 +90,7 @@ if [ "$VISIBILITY" = "PUBLIC" ]; then
 fi
 
 cat >> "$CASK" <<'END'
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "Grab.app"
 
@@ -101,12 +101,17 @@ cat >> "$CASK" <<'END'
 END
 
 if [ "$VISIBILITY" != "PUBLIC" ]; then
+  # Private builds are signed with the developer's own Apple Development certificate,
+  # which can't be notarized. Clear the "downloaded" mark so Grab opens like a copy
+  # built on this Mac instead of being stopped by Gatekeeper. Public releases are
+  # notarized and keep the mark.
   cat >> "$CASK" <<'END'
 
-  caveats <<~EOS
-    Grab isn't notarized yet, so macOS stops it the first time it opens.
-    Open System Settings → Privacy & Security and click "Open Anyway" for Grab.
-  EOS
+  postflight_steps do
+    if_path_exists "{{appdir}}/Grab.app" do
+      run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Grab.app"]
+    end
+  end
 END
 fi
 echo "end" >> "$CASK"

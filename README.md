@@ -242,9 +242,7 @@ brew install --cask 0x1p0/tap/grab
 
 It downloads with your GitHub login, from the GitHub CLI (`gh auth login`) or `HOMEBREW_GITHUB_API_TOKEN`. `brew upgrade` picks up new releases. Built Grab from source before? Delete that copy from Applications first; your settings stay.
 
-**Download:** `Grab-x.y.z.dmg` from [Releases](https://github.com/0x1p0/grab/releases): open it and drag Grab to Applications.
-
-Grab isn't notarized yet, so the first time it opens, macOS stops it: open **System Settings → Privacy & Security** and click **Open Anyway**.
+**Download:** `Grab-x.y.z.dmg` from [Releases](https://github.com/0x1p0/grab/releases): open it and drag Grab to Applications. Grab isn't notarized yet, so the first time a downloaded copy opens, macOS stops it: open **System Settings → Privacy & Security** and click **Open Anyway**. (The Homebrew install takes care of this for you.)
 
 Once Grab is public it keeps itself up to date: about once a day it checks GitHub for a new release and asks before installing. It only installs an update signed by the same developer as the copy you're running, and your settings and permissions carry over. **Check for Updates…** is in the menu bar.
 
