@@ -1516,7 +1516,9 @@ final class Session {
                 let textual = s.kind.isTextRange || s.kind == .table || s.kind == .list
                     || (s.kind == .element && !s.isVisual && !s.isBackdrop && s.bestText != nil)
                 if textual {
-                    let base = ImageTools.padded(img, pointSize: size) ?? (img, size)
+                    // Tables keep their outer lines: those are part of the table.
+                    let tidy = s.kind != .table && s.kind != .list
+                    let base = ImageTools.textCard(img, pointSize: size, tidyEdges: tidy) ?? (img, size)
                     // Never trim the edges of text: they may hold the tops and tails of letters.
                     let r = ImageTools.rounded(base.image, pointSize: base.pointSize, trimBleed: false) ?? base
                     return .success(.image(r.image, pointSize: r.pointSize))

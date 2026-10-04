@@ -278,23 +278,43 @@ final class RoundedImageTests: XCTestCase {
         XCTAssertEqual(px.at(px.w / 2, px.h / 2).3, 255)
     }
 
-    /// Text tight to its edges gets padding in its own background color; busy edges don't.
-    func testTextGetsRoomToBreathe() throws {
-        let text = image(400, 60) { ctx in
-            ctx.setFillColor(CGColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1))
-            ctx.fill(CGRect(x: 0, y: 0, width: 400, height: 60))
-            ctx.setFillColor(CGColor(red: 0.9, green: 0.9, blue: 0.9, alpha: 1))
-            for i in 0..<8 { ctx.fill(CGRect(x: 4 + i * 48, y: 6, width: 36, height: 48)) }   // "letters" touching top and bottom
+    /// Where the ink is in a picture: (left, top, right, bottom) margins in pixels.
+    private func margins(_ px: ImageTools.Pixels, from bg: (Int, Int, Int, Int)) -> (Int, Int, Int, Int) {
+        var minX = px.w, maxX = -1, minY = px.h, maxY = -1
+        for y in 0..<px.h {
+            for x in 0..<px.w {
+                let p = px.at(x, y)
+                guard p.3 > 200, !ImageTools.Pixels.near(p, bg, 40) else { continue }
+                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+            }
         }
-        let p = try XCTUnwrap(ImageTools.padded(text, pointSize: CGSize(width: 200, height: 30)))
-        // 30 pt tall → about 10.5 pt of padding, 21 px at 2×, on each side.
-        XCTAssertEqual(p.image.width, 400 + 42)
-        XCTAssertEqual(p.image.height, 60 + 42)
-        XCTAssertEqual(p.pointSize.height, 51, accuracy: 0.5)
-        let px = try XCTUnwrap(ImageTools.Pixels(p.image))
+        return (minX, minY, px.w - 1 - maxX, px.h - 1 - maxY)
+    }
+
+    /// Text that hugs one edge and floats away from another comes out with the same room on
+    /// every side, in its own background color; text over a busy picture is left alone.
+    func testTextGetsEvenRoom() throws {
+        let text = image(600, 80) { ctx in
+            ctx.setFillColor(CGColor(srgbRed: 0.08, green: 0.08, blue: 0.09, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: 600, height: 80))
+            ctx.setFillColor(CGColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1))
+            // Two "lines" of letters, 30 px tall: touching the left and top, far from the right.
+            for line in 0..<2 {
+                for i in 0..<(line == 0 ? 8 : 5) { ctx.fill(CGRect(x: i * 40, y: 80 - 30 - line * 40, width: 28, height: 30)) }
+            }
+        }
+        let card = try XCTUnwrap(ImageTools.textCard(text, pointSize: CGSize(width: 300, height: 40)))
+        let px = try XCTUnwrap(ImageTools.Pixels(card.image))
         let source = try XCTUnwrap(ImageTools.Pixels(text))
-        XCTAssertTrue(ImageTools.Pixels.near(px.at(2, 2), source.at(1, 1), 1), "padding is the background color")
-        XCTAssertTrue(ImageTools.Pixels.near(px.at(21 + 10, 21 + 30), source.at(10, 30), 1), "the text is untouched")
+        let bg = source.at(599, 79)
+        let m = margins(px, from: bg)
+        // 15 pt lines → about 16.5 pt of room (33 px at 2×) on every side.
+        XCTAssertEqual(m.0, m.2)
+        XCTAssertEqual(m.1, m.3)
+        XCTAssertEqual(m.0, m.1)
+        XCTAssertEqual(m.0, 33, accuracy: 3)
+        XCTAssertEqual(card.pointSize.width, CGFloat(px.w) / 2, accuracy: 0.01)
+        XCTAssertTrue(ImageTools.Pixels.near(px.at(2, 2), bg, 1), "the room is the background color")
 
         let busy = image(200, 60) { ctx in
             for i in 0..<20 {
@@ -302,6 +322,41 @@ final class RoundedImageTests: XCTestCase {
                 ctx.fill(CGRect(x: i * 10, y: 0, width: 10, height: 60))
             }
         }
-        XCTAssertNil(ImageTools.padded(busy, pointSize: CGSize(width: 100, height: 30)))
+        XCTAssertNil(ImageTools.textCard(busy, pointSize: CGSize(width: 100, height: 30)))
+    }
+
+    /// Text in a bordered, rounded box on a darker page: the border and the page in its
+    /// corners stay behind, only the writing is framed.
+    func testBoxAroundTextIsLeftOut() throws {
+        let w = 500, h = 90
+        let img = image(w, h) { ctx in
+            ctx.setFillColor(CGColor(srgbRed: 0.3, green: 0.3, blue: 0.32, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            let box = CGPath(roundedRect: CGRect(x: 1, y: 1, width: w - 2, height: h - 2), cornerWidth: 20, cornerHeight: 20, transform: nil)
+            ctx.addPath(box)
+            ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fillPath()
+            ctx.addPath(box)
+            ctx.setStrokeColor(CGColor(srgbRed: 0.75, green: 0.75, blue: 0.78, alpha: 1))
+            ctx.setLineWidth(2)
+            ctx.strokePath()
+            ctx.setFillColor(CGColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1))
+            for i in 0..<6 { ctx.fill(CGRect(x: 30 + i * 36, y: 30, width: 26, height: 28)) }
+        }
+        let card = try XCTUnwrap(ImageTools.textCard(img, pointSize: CGSize(width: 250, height: 45)))
+        let px = try XCTUnwrap(ImageTools.Pixels(card.image))
+        // Only the letters and white room: no grey border or page anywhere.
+        var stray = 0
+        for y in 0..<px.h {
+            for x in 0..<px.w {
+                let p = px.at(x, y)
+                if p.0 > 40 && p.0 < 240 { stray += 1 }
+            }
+        }
+        XCTAssertEqual(stray, 0)
+        let m = margins(px, from: (255, 255, 255, 255))
+        XCTAssertEqual(m.0, m.2)
+        XCTAssertEqual(m.1, m.3)
+        XCTAssertEqual(px.w - m.0 - m.2, 5 * 36 + 26, "cropped to the letters")
     }
 }

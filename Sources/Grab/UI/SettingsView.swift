@@ -153,7 +153,7 @@ struct SettingsView: View {
                 }
                 Toggle(isOn: $settings.roundImageCorners) {
                     Text("Polish copied images")
-                    Text("Soft rounded corners, and pictures of text get a little room around them. Turn off for pixel-exact copies.")
+                    Text("Soft rounded corners, and pictures of text are framed with the same room on every side. Turn off for pixel-exact copies.")
                 }
                 Toggle(isOn: $settings.adaptivePaste) {
                     Text("Adapt code to where you paste")

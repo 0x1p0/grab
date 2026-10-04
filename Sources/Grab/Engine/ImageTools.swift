@@ -75,7 +75,8 @@ enum ImageTools {
     /// trimmed off the edges first, and the new corners are cut at least as round as the
     /// source's own, so no slivers of the page are left showing.
     static func rounded(_ image: CGImage, pointSize: CGSize, points: CGFloat = 12, trimBleed: Bool = true) -> (image: CGImage, pointSize: CGSize)? {
-        guard min(image.width, image.height) >= 48, let px = Pixels(image) else { return nil }
+        let minSide = trimBleed ? 48 : 16
+        guard min(image.width, image.height) >= minSide, let px = Pixels(image) else { return nil }
         let scale = pointSize.width > 0 ? CGFloat(image.width) / pointSize.width : 2
 
         // A background showing in all four corners is the page behind a rounded element.
@@ -113,7 +114,7 @@ enum ImageTools {
         }
 
         let w = px.w - crop.left - crop.right, h = px.h - crop.top - crop.bottom
-        guard w >= 48, h >= 48 else { return nil }
+        guard w >= minSide, h >= minSide else { return nil }
         let short = CGFloat(min(w, h))
         // Our corners, or rounder than the source's own so they fully cover its background.
         // A continuous corner of radius r cuts 0.214 r deep at 45°, a circular one of radius
@@ -133,33 +134,123 @@ enum ImageTools {
         return (out, CGSize(width: CGFloat(w) * k, height: CGFloat(h) * k))
     }
 
-    /// A picture of text, given room to breathe: padding in the text's own background color,
-    /// so it pastes as a tidy card instead of letters touching the edges. Only for solid
-    /// backgrounds; nil when the edges are busy (text over a photo), so nothing is invented.
-    static func padded(_ image: CGImage, pointSize: CGSize) -> (image: CGImage, pointSize: CGSize)? {
+    /// A picture of text, framed like a card: cropped to the writing itself, then given the
+    /// same room on every side in the text's own background color, so it never hugs one
+    /// edge and floats away from another.
+    ///
+    /// With `tidyEdges`, what belongs to the box around the text (a border, the page showing
+    /// behind its rounded corners) is left out. Nil unless the background is one solid
+    /// color: nothing is invented around text over a photo.
+    static func textCard(_ image: CGImage, pointSize: CGSize, tidyEdges: Bool = true) -> (image: CGImage, pointSize: CGSize)? {
         guard let px = Pixels(image), px.w >= 8, px.h >= 8 else { return nil }
-        let scale = pointSize.width > 0 ? CGFloat(px.w) / pointSize.width : 2
-        // The edges' typical color, and whether they're nearly all that color.
-        var border: [(Int, Int, Int, Int)] = []
-        let step = max(1, (px.w + px.h) / 400)
-        for x in stride(from: 0, to: px.w, by: step) { border.append(px.at(x, 0)); border.append(px.at(x, px.h - 1)) }
-        for y in stride(from: 0, to: px.h, by: step) { border.append(px.at(0, y)); border.append(px.at(px.w - 1, y)) }
-        func median(_ k: KeyPath<(Int, Int, Int, Int), Int>) -> Int { border.map { $0[keyPath: k] }.sorted()[border.count / 2] }
-        let bg = (median(\.0), median(\.1), median(\.2), median(\.3))
-        guard bg.3 > 240, border.filter({ Pixels.near($0, bg, 16) }).count * 100 >= border.count * 85 else { return nil }
-        // About a third of the text's height, between 10 and 20 points.
-        let padPoints = min(20, max(10, pointSize.height * 0.35))
-        let pad = Int((padPoints * scale).rounded())
-        let w = px.w + pad * 2, h = px.h + pad * 2
+        let w = px.w, h = px.h
+        let scale = pointSize.width > 0 ? CGFloat(w) / pointSize.width : 2
+        guard let found = px.dominant(), found.share >= 0.5 else { return nil }
+        let bg = found.color
+
+        // Ink: anything clearly not background.
+        var ink = [Bool](repeating: false, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                let p = px.at(x, y)
+                ink[y * w + x] = p.3 > 128 && max(abs(p.0 - bg.0), abs(p.1 - bg.1), abs(p.2 - bg.2)) > 40
+            }
+        }
+
+        // What belongs to the box around the text, not the text.
+        var corners: [(x: Int, y: Int, side: Int)] = []
+        var frame = [Bool](repeating: false, count: w * h)
+        if tidyEdges {
+            // The page behind a rounded box shows in its corners. Walk in diagonally to see how
+            // round the box is (R × (1 − 1/√2) pixels for radius R) and ignore that corner square
+            // when finding the text. Letters reaching a corner still count by their other strokes.
+            let limit = min(w, h) / 2
+            for (cx, cy, dx, dy) in [(0, 0, 1, 1), (w - 1, 0, -1, 1), (0, h - 1, 1, -1), (w - 1, h - 1, -1, -1)] {
+                var d = 0
+                while d < limit, !Pixels.near(px.at(cx + dx * d, cy + dy * d), bg, 24) { d += 1 }
+                guard d > 0, d < limit else { continue }
+                corners.append((cx, cy, min(Int(CGFloat(d) / (1 - 1 / 2.0.squareRoot())) + 2, limit)))
+            }
+            // A border or divider is ink joined to the edge that runs (nearly) all along it;
+            // a letter cut off by the edge is small. Borders are left out.
+            let thin = max(2, Int((2 * scale).rounded()))
+            var seen = [Bool](repeating: false, count: w * h)
+            let edge = (0..<w).flatMap { [$0, (h - 1) * w + $0] } + (0..<h).flatMap { [$0 * w, $0 * w + w - 1] }
+            for start in edge where ink[start] && !seen[start] {
+                var stack = [start], members: [Int] = []
+                var bx0 = w, bx1 = -1, by0 = h, by1 = -1
+                seen[start] = true
+                while let i = stack.popLast() {
+                    members.append(i)
+                    let x = i % w, y = i / w
+                    bx0 = min(bx0, x); bx1 = max(bx1, x); by0 = min(by0, y); by1 = max(by1, y)
+                    for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                        for nx in max(0, x - 1)...min(w - 1, x + 1) where ink[ny * w + nx] && !seen[ny * w + nx] {
+                            seen[ny * w + nx] = true
+                            stack.append(ny * w + nx)
+                        }
+                    }
+                }
+                let spanW = bx1 - bx0 + 1, spanH = by1 - by0 + 1
+                let long = (spanW * 10 >= w * 8, spanH * 10 >= h * 8)
+                let ring = long.0 && long.1 && members.count <= 2 * (w + h) * thin * 2
+                let line = (long.0 && spanH <= thin) || (long.1 && spanW <= thin)
+                guard ring || line else { continue }
+                for i in members { frame[i] = true; ink[i] = false }
+            }
+        }
+        func counts(_ x: Int, _ y: Int) -> Bool {
+            guard ink[y * w + x] else { return false }
+            return !corners.contains { c in abs(x - c.x) < c.side && abs(y - c.y) < c.side }
+        }
+
+        // Where the writing is, and how tall its lines run.
+        var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1
+        var rowHasInk = [Bool](repeating: false, count: h)
+        for y in 0..<h {
+            for x in 0..<w where counts(x, y) {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+                rowHasInk[y] = true
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return nil }
+        var runs: [Int] = [], run = 0
+        for y in minY...(maxY + 1) {
+            if y <= maxY, rowHasInk[y] { run += 1 } else if run > 0 { runs.append(run); run = 0 }
+        }
+        let lineHeight = CGFloat(runs.sorted()[runs.count / 2]) / scale
+
+        // Room in proportion to the type: about a line's height, 14 to 32 points.
+        let pad = Int((min(32, max(14, lineHeight * 1.1)) * scale).rounded())
+        // Keep a point around the ink for the soft edges of letters (where the picture has it),
+        // measuring the room from the letters themselves so every side gets the same.
+        let keep = max(1, Int(scale.rounded()))
+        let x0 = max(0, minX - keep), x1 = min(w - 1, maxX + keep)
+        let y0 = max(0, minY - keep), y1 = min(h - 1, maxY + keep)
+        let outW = (maxX - minX + 1) + pad * 2, outH = (maxY - minY + 1) + pad * 2
+        var out = [UInt8](repeating: 0, count: outW * outH * 4)
+        for i in 0..<(outW * outH) {
+            out[i * 4] = UInt8(bg.0); out[i * 4 + 1] = UInt8(bg.1); out[i * 4 + 2] = UInt8(bg.2); out[i * 4 + 3] = 255
+        }
+        for y in y0...y1 {
+            for x in x0...x1 where !frame[y * w + x] {
+                let p = px.at(x, y)
+                // Anything see-through lands on the background (premultiplied).
+                let a = 255 - p.3
+                let o = ((y - minY + pad) * outW + (x - minX + pad)) * 4
+                out[o] = UInt8(min(255, p.0 + bg.0 * a / 255))
+                out[o + 1] = UInt8(min(255, p.1 + bg.1 * a / 255))
+                out[o + 2] = UInt8(min(255, p.2 + bg.2 * a / 255))
+            }
+        }
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        ctx.setFillColor(CGColor(srgbRed: CGFloat(bg.0) / 255, green: CGFloat(bg.1) / 255, blue: CGFloat(bg.2) / 255, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        ctx.interpolationQuality = .none
-        ctx.draw(image, in: CGRect(x: pad, y: pad, width: px.w, height: px.h))
-        guard let out = ctx.makeImage() else { return nil }
-        return (out, CGSize(width: CGFloat(w) / scale, height: CGFloat(h) / scale))
+              let provider = CGDataProvider(data: Data(out) as CFData),
+              let card = CGImage(width: outW, height: outH, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: outW * 4, space: space,
+                                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        else { return nil }
+        return (card, CGSize(width: CGFloat(outW) / scale, height: CGFloat(outH) / scale))
     }
 
     /// A rounded rectangle with Apple-style continuous corners: each corner is a superellipse
@@ -213,6 +304,29 @@ enum ImageTools {
         func at(_ x: Int, _ y: Int) -> (Int, Int, Int, Int) {
             let i = (min(max(y, 0), h - 1) * w + min(max(x, 0), w - 1)) * 4
             return (Int(data[i]), Int(data[i + 1]), Int(data[i + 2]), Int(data[i + 3]))
+        }
+
+        /// The most common opaque color, and the share of the picture that's (nearly) it.
+        func dominant(tolerance tol: Int = 6) -> (color: (Int, Int, Int, Int), share: Double)? {
+            let step = max(1, Int((Double(w * h) / 40_000).squareRoot()))
+            var counts: [UInt32: Int] = [:]
+            var samples = 0
+            for y in stride(from: 0, to: h, by: step) {
+                for x in stride(from: 0, to: w, by: step) {
+                    let i = (y * w + x) * 4
+                    samples += 1
+                    guard data[i + 3] > 240 else { continue }
+                    counts[UInt32(data[i]) << 16 | UInt32(data[i + 1]) << 8 | UInt32(data[i + 2]), default: 0] += 1
+                }
+            }
+            guard let top = counts.max(by: { $0.value < $1.value })?.key else { return nil }
+            let c = (Int(top >> 16 & 0xff), Int(top >> 8 & 0xff), Int(top & 0xff), 255)
+            let close = counts.reduce(0) { sum, kv in
+                let k = kv.key
+                let near = abs(Int(k >> 16 & 0xff) - c.0) <= tol && abs(Int(k >> 8 & 0xff) - c.1) <= tol && abs(Int(k & 0xff) - c.2) <= tol
+                return near ? sum + kv.value : sum
+            }
+            return (c, Double(close) / Double(max(samples, 1)))
         }
 
         static func near(_ a: (Int, Int, Int, Int), _ b: (Int, Int, Int, Int), _ tol: Int) -> Bool {
