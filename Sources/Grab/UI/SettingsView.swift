@@ -25,7 +25,7 @@ struct SettingsView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .tint(Theme.accent)
-        .frame(width: 820, height: 600)
+        .frame(minWidth: 820, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
         .ignoresSafeArea()
     }
 

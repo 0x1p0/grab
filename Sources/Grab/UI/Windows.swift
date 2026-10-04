@@ -40,7 +40,10 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             w.isMovableByWindowBackground = true
             w.title = "Grab Settings"
             w.isReleasedWhenClosed = false
-            w.contentView = NSHostingView(rootView: SettingsView(openOnboarding: { [weak self] in self?.showOnboarding() }))
+            // The content fills the whole window, title bar included: no fixed size to leave a gap.
+            let host = NSHostingView(rootView: SettingsView(openOnboarding: { [weak self] in self?.showOnboarding() }))
+            host.sizingOptions = []
+            w.contentView = host
             w.center()
             w.delegate = self
             settings = w
