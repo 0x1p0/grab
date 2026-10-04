@@ -148,6 +148,8 @@ final class Session {
     private var lastSnap: (kind: ScopeKind, frame: CGRect)?
     private var lastSnapTime: CFTimeInterval = 0
     private var lastAnnouncement: CFTimeInterval = 0
+    /// ⌥V was pressed; the paste goes out when the keys are released.
+    private var pastePending = false
     /// ⌥R: the corner a box is being drawn from; the pointer is the other corner.
     private var boxAnchor: CGPoint?
     static let boxRole = "GrabBox"
@@ -1998,6 +2000,10 @@ final class Session {
     /// ⌥V: pastes the shelf one item at a time, in order, into whatever has focus.
     private func pasteNext() {
         let shelf = Shelf.shared
+        guard !pastePending else {
+            Sound.shared.play(.bump)
+            return
+        }
         guard let (item, index) = shelf.takeNext() else {
             Sound.shared.play(.bump)
             showToast(Toast(success: false, title: "The shelf is empty",
@@ -2005,12 +2011,28 @@ final class Session {
             return
         }
         Clipboard.write(item.payload)
-        Keystroke.paste()
+        pastePending = true
+        pasteOnRelease(until: Date().addingTimeInterval(10))
         Sound.shared.play(.tick)
         Haptics.perform(.alignment)
         let n = shelf.items.count
         let detail = index + 1 < n ? "Next: " + shelf.items[index + 1].title.oneLine.truncated(48) : "That was the last · \(Trigger.current.chord("V")) starts over"
         showToast(Toast(success: true, title: "Pasted \(index + 1) of \(n)", detail: detail, mode: item.mode))
+    }
+
+    /// ⌘V is sent once every modifier is up: a ⌘V sent while you still hold ⌥ would
+    /// reach the app as ⌘⌥V (Paste and Match Style, or Move in Finder).
+    private func pasteOnRelease(until deadline: Date) {
+        let held = CGEventSource.flagsState(.combinedSessionState).intersection([.maskAlternate, .maskCommand, .maskControl, .maskShift])
+        if held.isEmpty {
+            pastePending = false
+            Keystroke.paste()
+        } else if Date() < deadline {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in self?.pasteOnRelease(until: deadline) }
+        } else {
+            // Held too long: leave it on the clipboard for a manual ⌘V.
+            pastePending = false
+        }
     }
 
     // MARK: Compare

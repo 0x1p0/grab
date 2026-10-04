@@ -99,7 +99,7 @@ While holding <kbd>⌥</kbd> (or the key you pick in Settings: right <kbd>⌥</k
 | <kbd>↑</kbd> <kbd>↓</kbd> | Grow / shrink the area: word → line → sentence → paragraph → block → window (in code: symbol → line → block → function → class → file) |
 | <kbd>⇥</kbd> | Switch format (see [Smart formats](#smart-formats)) |
 | <kbd>⇧</kbd> <kbd>C</kbd> | Add it to the **shelf**, a floating list you can reorder; the clipboard always holds the whole shelf |
-| <kbd>V</kbd> | **Paste the next** shelf item into whatever has focus, one at a time, in order |
+| <kbd>V</kbd> | **Paste the next** shelf item into whatever has focus, one at a time, in order (it goes in as you let go of <kbd>⌥</kbd>) |
 | <kbd>R</kbd> | Draw a **box** from here: move to size it, <kbd>C</kbd> copies everything inside, <kbd>R</kbd> again goes back to pointing |
 | <kbd>D</kbd> | **Compare** it with what's on the clipboard, word by word or line by line |
 | <kbd>F</kbd> | **Fill** the form under the pointer from your clipboard (a form copied with <kbd>⇥</kbd> Fields, or `Name: Ada` lines) |
@@ -196,7 +196,7 @@ Each has its own little sounds, the menu bar icon lights up the moment the grab 
 
 | | What it's for | When it's used | What Grab never does | Without it |
 |---|---|---|---|---|
-| **Accessibility** (required) | Noticing ⌥ and C, and reading what's under your pointer: the text, links, files and tables apps already describe to tools like VoiceOver | Modifier keys all the time; other keys and the pointer only while ⌥ is held | Click, move windows or read password fields. It types only when you ask: <kbd>⌥</kbd><kbd>V</kbd> presses ⌘V for you, <kbd>⌥</kbd><kbd>F</kbd> fills a form. Nothing you type is recorded | Grab can't work |
+| **Accessibility** (required) | Noticing ⌥ and C, and reading what's under your pointer: the text, links, files and tables apps already describe to tools like VoiceOver | Modifier keys all the time; other keys and the pointer only while ⌥ is held | Click, move windows or read password fields. It types only when you ask: <kbd>⌥</kbd><kbd>V</kbd> presses ⌘V for you once you let go of ⌥, <kbd>⌥</kbd><kbd>F</kbd> fills a form. Nothing you type is recorded | Grab can't work |
 | **Screen Recording** (optional) | Images as they appear, colors, QR codes, and text inside pictures, video and apps that don't describe themselves (on-device OCR) | During a hold, around the pointer, or for a pin you've set to Live; Grab's own overlay is excluded | Record video, upload or keep screenshots | Text, links, files and code still copy; images, colors, QR, OCR, boxes and live pins are off |
 
 No other permissions. Grab goes online only to check GitHub for a new version about once a day, for currency exchange rates (only currency codes are sent), and, when you copy a web image, to fetch the original from the address your browser already loaded it from. The first two can be turned off. A Shortcut you run from your own format does whatever that Shortcut does.

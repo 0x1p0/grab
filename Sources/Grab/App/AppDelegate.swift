@@ -258,6 +258,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "historydump":
             let rows = History.shared.items.map { "\($0.mode.title)|\($0.appName ?? "")|\($0.title)" }
             try? rows.joined(separator: "\n").write(toFile: arg, atomically: true, encoding: .utf8)
+        case "sim":
+            // Real key events through the system, as if typed: "opt-down,sleep:0.4,key:9,opt-up".
+            let steps = arg.split(separator: ",").map(String.init)
+            Thread.detachNewThread {
+                let src = CGEventSource(stateID: .hidSystemState)
+                var flags: CGEventFlags = []
+                for step in steps {
+                    if step.hasPrefix("sleep:") { Thread.sleep(forTimeInterval: Double(step.dropFirst(6)) ?? 0.2); continue }
+                    if step.hasPrefix("key:"), let code = CGKeyCode(step.dropFirst(4)) {
+                        for down in [true, false] {
+                            let e = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: down)
+                            e?.flags = flags
+                            e?.post(tap: .cghidEventTap)
+                            Thread.sleep(forTimeInterval: 0.03)
+                        }
+                        continue
+                    }
+                    let (code, bits): (CGKeyCode, UInt64) = step.hasPrefix("ropt") ? (61, 0x40) : (58, 0x20)
+                    if step.hasSuffix("-down") { flags = CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | bits) } else { flags = [] }
+                    let e = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: step.hasSuffix("-down"))
+                    e?.type = .flagsChanged
+                    e?.flags = flags
+                    e?.post(tap: .cghidEventTap)
+                }
+            }
+        case "focus":
+            let v = arg.split(separator: ",").compactMap { Float(String($0)) }
+            var found: AXUIElement?
+            if v.count == 2, AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), v[0], v[1], &found) == .success, let e = found {
+                AXUIElementSetAttributeValue(e, "AXFocused" as CFString, kCFBooleanTrue)
+            }
         case "settingsscroll":
             // Scrolls the settings form to a y offset, for screenshots.
             func scrollView(in v: NSView) -> NSScrollView? {

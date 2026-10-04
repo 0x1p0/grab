@@ -631,68 +631,8 @@ struct MascotScene: View {
         let body = geo.local(p.body)
         ZStack(alignment: .topLeading) {
             // Cable, tongue or beam behind everything.
-            if let line = p.line {
-                let a = geo.local(line.0), b = geo.local(line.1)
-                if fly.kind == .clawsy {
-                    Path { path in
-                        path.move(to: a)
-                        path.addLine(to: b)
-                    }
-                    .stroke(LinearGradient(colors: [Color(white: 0.95), Color(white: 0.5)], startPoint: .top, endPoint: .bottom),
-                            style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
-                    .shadow(color: .black.opacity(0.35), radius: 1.5, x: 1, y: 1)
-                    .opacity(p.opacity)
-                    // The trolley riding along the top.
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(LinearGradient(colors: snapGradient, startPoint: .leading, endPoint: .trailing))
-                        .frame(width: 26 * p.scale, height: 10 * p.scale)
-                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
-                        .shadow(color: snapGradient[1].opacity(0.6), radius: 4)
-                        .position(a)
-                        .opacity(p.opacity)
-                } else if fly.kind == .ribbit {
-                    Path { path in
-                        path.move(to: a)
-                        let mid = CGPoint(x: (a.x + b.x) / 2 + (b.y - a.y) * 0.06, y: (a.y + b.y) / 2 - (b.x - a.x) * 0.06)
-                        path.addQuadCurve(to: b, control: mid)
-                    }
-                    .stroke(LinearGradient(colors: [Color(red: 1, green: 0.42, blue: 0.55), Color(red: 0.95, green: 0.3, blue: 0.45)],
-                                           startPoint: .top, endPoint: .bottom), style: StrokeStyle(lineWidth: 5.5, lineCap: .round))
-                    Circle().fill(Color(red: 1, green: 0.42, blue: 0.55)).frame(width: 12, height: 12).position(b)
-                }
-            }
-            if fly.kind == .beamy, p.beam > 0, !p.cargo.isNull {
-                let c = geo.local(p.cargo)
-                Path { path in
-                    path.move(to: CGPoint(x: body.x - 8 * p.scale, y: body.y + 4))
-                    path.addLine(to: CGPoint(x: body.x + 8 * p.scale, y: body.y + 4))
-                    path.addLine(to: CGPoint(x: c.maxX + 10, y: c.maxY + 6))
-                    path.addLine(to: CGPoint(x: c.minX - 10, y: c.maxY + 6))
-                    path.closeSubpath()
-                }
-                .fill(LinearGradient(colors: [Color(red: 0.25, green: 0.95, blue: 0.75).opacity(0.55 * p.beam),
-                                              Color(red: 0.3, green: 0.75, blue: 1).opacity(0.18 * p.beam)],
-                                     startPoint: .top, endPoint: .bottom))
-                .overlay(
-                    Path { path in
-                        path.move(to: CGPoint(x: body.x - 8 * p.scale, y: body.y + 4))
-                        path.addLine(to: CGPoint(x: c.minX - 10, y: c.maxY + 6))
-                        path.move(to: CGPoint(x: body.x + 8 * p.scale, y: body.y + 4))
-                        path.addLine(to: CGPoint(x: c.maxX + 10, y: c.maxY + 6))
-                    }
-                    .stroke(Color(red: 0.2, green: 0.85, blue: 0.75).opacity(0.7 * p.beam), lineWidth: 1.2)
-                )
-                ForEach(0..<5, id: \.self) { k in
-                    let u = (t * 1.6 + Double(k) * 0.2).truncatingRemainder(dividingBy: 1)
-                    let y = c.maxY - CGFloat(u) * (c.maxY - body.y)
-                    let spread = (c.width / 2 + 6) * CGFloat(1 - u)
-                    SparkleStar().fill(Color.white)
-                        .frame(width: 5, height: 5)
-                        .shadow(color: Color(red: 0.3, green: 0.95, blue: 0.8), radius: 3)
-                        .position(x: body.x + spread * CGFloat(sin(Double(k) * 2.1)), y: y)
-                        .opacity(p.beam * (1 - u))
-                }
-            }
+            cableLayer(p)
+            beamLayer(p, body: body)
             // Sparkle trail.
             ForEach(Array(p.trail.enumerated()), id: \.offset) { k, pt in
                 SparkleStar().fill(Color.white.opacity(0.85 - Double(k) * 0.15))
@@ -729,6 +669,76 @@ struct MascotScene: View {
             }
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+    }
+
+    @ViewBuilder private func cableLayer(_ p: MascotPose) -> some View {
+        if let line = p.line {
+            let a = geo.local(line.0), b = geo.local(line.1)
+            if fly.kind == .clawsy {
+                Path { path in
+                    path.move(to: a)
+                    path.addLine(to: b)
+                }
+                .stroke(LinearGradient(colors: [Color(white: 0.95), Color(white: 0.5)], startPoint: .top, endPoint: .bottom),
+                        style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
+                .shadow(color: .black.opacity(0.35), radius: 1.5, x: 1, y: 1)
+                .opacity(p.opacity)
+                // The trolley riding along the top.
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(LinearGradient(colors: snapGradient, startPoint: .leading, endPoint: .trailing))
+                    .frame(width: 26 * p.scale, height: 10 * p.scale)
+                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
+                    .shadow(color: snapGradient[1].opacity(0.6), radius: 4)
+                    .position(a)
+                    .opacity(p.opacity)
+            } else if fly.kind == .ribbit {
+                Path { path in
+                    path.move(to: a)
+                    let midX: CGFloat = (a.x + b.x) / 2 + (b.y - a.y) * 0.06
+                    let midY: CGFloat = (a.y + b.y) / 2 - (b.x - a.x) * 0.06
+                    let mid = CGPoint(x: midX, y: midY)
+                    path.addQuadCurve(to: b, control: mid)
+                }
+                .stroke(LinearGradient(colors: [Color(red: 1, green: 0.42, blue: 0.55), Color(red: 0.95, green: 0.3, blue: 0.45)],
+                                       startPoint: .top, endPoint: .bottom), style: StrokeStyle(lineWidth: 5.5, lineCap: .round))
+                Circle().fill(Color(red: 1, green: 0.42, blue: 0.55)).frame(width: 12, height: 12).position(b)
+            }
+        }
+    }
+
+    @ViewBuilder private func beamLayer(_ p: MascotPose, body: CGPoint) -> some View {
+        if fly.kind == .beamy, p.beam > 0, !p.cargo.isNull {
+            let c = geo.local(p.cargo)
+            Path { path in
+                path.move(to: CGPoint(x: body.x - 8 * p.scale, y: body.y + 4))
+                path.addLine(to: CGPoint(x: body.x + 8 * p.scale, y: body.y + 4))
+                path.addLine(to: CGPoint(x: c.maxX + 10, y: c.maxY + 6))
+                path.addLine(to: CGPoint(x: c.minX - 10, y: c.maxY + 6))
+                path.closeSubpath()
+            }
+            .fill(LinearGradient(colors: [Color(red: 0.25, green: 0.95, blue: 0.75).opacity(0.55 * p.beam),
+                                          Color(red: 0.3, green: 0.75, blue: 1).opacity(0.18 * p.beam)],
+                                 startPoint: .top, endPoint: .bottom))
+            .overlay(
+                Path { path in
+                    path.move(to: CGPoint(x: body.x - 8 * p.scale, y: body.y + 4))
+                    path.addLine(to: CGPoint(x: c.minX - 10, y: c.maxY + 6))
+                    path.move(to: CGPoint(x: body.x + 8 * p.scale, y: body.y + 4))
+                    path.addLine(to: CGPoint(x: c.maxX + 10, y: c.maxY + 6))
+                }
+                .stroke(Color(red: 0.2, green: 0.85, blue: 0.75).opacity(0.7 * p.beam), lineWidth: 1.2)
+            )
+            ForEach(0..<5, id: \.self) { k in
+                let u = (t * 1.6 + Double(k) * 0.2).truncatingRemainder(dividingBy: 1)
+                let y = c.maxY - CGFloat(u) * (c.maxY - body.y)
+                let spread = (c.width / 2 + 6) * CGFloat(1 - u)
+                SparkleStar().fill(Color.white)
+                    .frame(width: 5, height: 5)
+                    .shadow(color: Color(red: 0.3, green: 0.95, blue: 0.8), radius: 3)
+                    .position(x: body.x + spread * CGFloat(sin(Double(k) * 2.1)), y: y)
+                    .opacity(p.beam * (1 - u))
+            }
+        }
     }
 
     @ViewBuilder func character(_ p: MascotPose) -> some View {

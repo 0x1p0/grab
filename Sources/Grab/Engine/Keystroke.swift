@@ -2,6 +2,7 @@ import Carbon.HIToolbox
 import CoreGraphics
 
 /// The one keystroke Grab ever sends: ⌘V, when you ask for the next shelf item with ⌥V.
+/// The session sends it only once no modifier keys are held.
 enum Keystroke {
     @MainActor static func paste() {
         // A private source, so the ⌥ you're holding isn't mixed into the event.

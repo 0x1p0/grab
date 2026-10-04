@@ -441,26 +441,44 @@ private struct Tile<Content: View>: View {
 /// A burst of brand-colored confetti when the practice is done.
 private struct Confetti: View {
     let fire: Bool
-    private let colors: [Color] = [Color(hex: 0xFF8A3D), Color(hex: 0xEC4F7C), Color(hex: 0x7C5CFF), Color(hex: 0x22C3EE), Color(hex: 0xFFD166)]
 
     var body: some View {
         GeometryReader { g in
             ZStack {
                 ForEach(0..<48, id: \.self) { i in
-                    let x = CGFloat((i * 37) % 97) / 97 * g.size.width
-                    let drift = CGFloat((i * 53) % 60) - 30
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(colors[i % colors.count])
-                        .frame(width: i % 3 == 0 ? 5 : 7, height: i % 3 == 0 ? 5 : 11)
-                        .rotationEffect(.degrees(fire ? Double((i * 47) % 360) + 600 : 0))
-                        .position(x: x + (fire ? drift : 0), y: fire ? g.size.height + 30 : -30)
-                        .opacity(fire ? 0 : 1)
-                        .animation(.easeIn(duration: 1.4 + Double(i % 7) * 0.13).delay(Double(i % 12) * 0.05), value: fire)
+                    ConfettiPiece(index: i, fire: fire, size: g.size)
                 }
             }
         }
         .allowsHitTesting(false)
         .opacity(fire ? 1 : 0)
+    }
+}
+
+private struct ConfettiPiece: View {
+    let index: Int
+    let fire: Bool
+    let size: CGSize
+
+    private static let colors: [Color] = [Color(hex: 0xFF8A3D), Color(hex: 0xEC4F7C), Color(hex: 0x7C5CFF), Color(hex: 0x22C3EE), Color(hex: 0xFFD166)]
+
+    var body: some View {
+        let i = index
+        let small = i % 3 == 0
+        let startX: CGFloat = CGFloat((i * 37) % 97) / 97 * size.width
+        let drift: CGFloat = CGFloat((i * 53) % 60) - 30
+        let spin: Double = fire ? Double((i * 47) % 360) + 600 : 0
+        let x: CGFloat = fire ? startX + drift : startX
+        let y: CGFloat = fire ? size.height + 30 : -30
+        let duration: Double = 1.4 + Double(i % 7) * 0.13
+        let delay: Double = Double(i % 12) * 0.05
+        return RoundedRectangle(cornerRadius: 1.5)
+            .fill(Self.colors[i % Self.colors.count])
+            .frame(width: small ? 5 : 7, height: small ? 5 : 11)
+            .rotationEffect(.degrees(spin))
+            .position(x: x, y: y)
+            .opacity(fire ? 0 : 1)
+            .animation(.easeIn(duration: duration).delay(delay), value: fire)
     }
 }
 
