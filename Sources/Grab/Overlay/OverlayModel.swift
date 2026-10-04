@@ -24,12 +24,20 @@ struct Toast: Equatable, Identifiable {
     var thumb: CGImage?
 }
 
+/// A grab on its way to the menu bar, carried by a mascot.
 struct Fly: Equatable, Identifiable {
     let id = UUID()
     var from: CGPoint
     var to: CGPoint
     var mode: GrabMode
     var color: RGBAColor?
+    /// What was grabbed (global), where the mascot picks it up.
+    var target: CGRect = .null
+    var kind: MascotKind = .classic
+    var cargo = Cargo(content: .symbol("doc.on.doc", "Copied"), colors: Theme.brand)
+    var start = Date()
+
+    static func == (a: Fly, b: Fly) -> Bool { a.id == b.id }
 }
 
 /// Everything the overlay draws. Coordinates are global top-left points.

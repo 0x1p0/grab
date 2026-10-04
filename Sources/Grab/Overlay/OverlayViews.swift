@@ -16,7 +16,7 @@ struct OverlayRootView: View {
             ScopeTagLayer(geo: geo, model: model)
             LoupeLayer(geo: geo, model: model)
             HUDLayer(geo: geo, model: model)
-            FlyLayer(geo: geo, model: model)
+            MascotLayer(geo: geo, model: model)
         }
         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         .ignoresSafeArea()
@@ -588,53 +588,5 @@ private struct ToastContent: View {
         .onAppear {
             withAnimation(.spring(response: 0.38, dampingFraction: 0.6).delay(0.03)) { drawn = true }
         }
-    }
-}
-
-// MARK: - Fly to menu bar
-
-private struct FlyLayer: View {
-    let geo: ScreenGeometry
-    let model: OverlayModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            if !reduceMotion, let fly = model.fly, geo.frame.contains(fly.from) {
-                FlyingChip(fly: fly, from: geo.local(fly.from), to: geo.local(fly.to))
-                    .id(fly.id)
-            }
-        }
-        .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-    }
-}
-
-private struct FlyingChip: View {
-    let fly: Fly
-    let from: CGPoint
-    let to: CGPoint
-
-    var body: some View {
-        let colors = Theme.colors(for: fly.mode, sample: fly.color)
-        let control = CGPoint(x: from.x + (to.x - from.x) * 0.35, y: min(from.y, to.y) - 140)
-        Circle()
-            .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: 30, height: 30)
-            .overlay(Image(systemName: fly.mode.symbol).font(.system(size: 13, weight: .bold)).foregroundStyle(.white))
-            .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.75))
-            .shadow(color: colors[0].opacity(0.5), radius: 8, y: 3)
-            .keyframeAnimator(initialValue: CGFloat(0), repeating: false) { content, t in
-                let u = 1 - t
-                let p = CGPoint(
-                    x: u * u * from.x + 2 * u * t * control.x + t * t * to.x,
-                    y: u * u * from.y + 2 * u * t * control.y + t * t * to.y
-                )
-                content
-                    .scaleEffect(t < 0.12 ? 0.6 + t / 0.12 * 0.5 : 1.1 - 0.7 * t)
-                    .opacity(t > 0.82 ? Double((1 - t) / 0.18) : 1)
-                    .position(p)
-            } keyframes: { _ in
-                CubicKeyframe(1, duration: 0.7)
-            }
     }
 }

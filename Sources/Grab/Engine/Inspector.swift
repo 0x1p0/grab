@@ -10,6 +10,9 @@ final class Inspector {
     private var textCache: [ElementKey: String] = [:]
     /// Containers already checked for form controls this session.
     var formCache: [ElementKey: Bool] = [:]
+    #if DEBUG
+    var debugNote = ""
+    #endif
     private var windowTitles: [ElementKey: String] = [:]
     private var appWindowTitles: [pid_t: String] = [:]
     /// Lexing a big file is the expensive part of code awareness; do it once per text.
@@ -23,6 +26,8 @@ final class Inspector {
     /// Forget per-session caches. Call on the inspector's queue.
     func reset() {
         textCache.removeAll()
+        cocoaCodeCache = nil
+        webCodeCache = nil
         formCache.removeAll()
         windowTitles.removeAll()
         appWindowTitles.removeAll()
@@ -393,7 +398,8 @@ final class Inspector {
             defaultID: nil
         )
         #if DEBUG
-        ins.debugChain = chain.map { "\($0.role)|\($0.subrole ?? "")|\($0.title ?? "")" }
+        ins.debugChain = chain.map { "\($0.role)|\($0.subrole ?? "")|\($0.title ?? "")" } + [debugNote]
+        debugNote = ""
         #endif
         ins.codeRegion = codeRegion
         ins.workingDirectory = hint.workingDirectory
@@ -609,8 +615,16 @@ final class Inspector {
         if let wi = webIndex {
             // Only trust ranges that start from real text. (Safari also reports
             // Live Text fragments from inside images; our own OCR reads those better.)
-            guard Self.webTextLeafRoles.contains(chain[0].role) else { return [] }
-            return webScopes(hosts: [chain[wi].element, chain[0].element], at: p, clip: clip)
+            if Self.webTextLeafRoles.contains(chain[0].role) {
+                return webScopes(hosts: [chain[wi].element, chain[0].element], at: p, clip: clip)
+            }
+            // Between two lines of a paragraph there's no text at the exact point;
+            // snap to the nearest line so the selection doesn't drop to "Group".
+            if Self.textBlockRoles.contains(chain[0].role), let f = chain[0].frame, f.height <= 600, f.contains(p),
+               let (q, leaf) = snapToLine(block: chain[0].element, blockFrame: f, at: p) {
+                return webScopes(hosts: [chain[wi].element, leaf], at: q, clip: clip)
+            }
+            return []
         }
         for n in chain.prefix(2) where Self.cocoaTextRoles.contains(n.role) {
             let r = cocoaScopes(n.element, at: p, clip: clip, hint: hint)
@@ -788,6 +802,12 @@ final class Inspector {
             word = walked.word
             marker2 = walked.marker
         }
+        // A lone "." just past the end of a line: the word before it is what you mean.
+        if let w = word, !(w.text ?? "").contains(where: { $0.isLetter || $0.isNumber }) {
+            let prev = make(host.parameterized(AXAttr.leftWord, marker2), .word, "Word")
+            let near = prev.map { abs($0.frame.midY - w.frame.midY) < max(4, w.frame.height / 2) && w.frame.minX - $0.frame.maxX < 30 } ?? false
+            word = near && (prev?.text ?? "").contains(where: { $0.isLetter || $0.isNumber }) ? prev : nil
+        }
         var out = [lineScope]
         if let w = word { out.append(w) }
         if let s = make(host.parameterized(AXAttr.sentenceRange, marker2), .sentence, "Sentence"), covers(s, slack: 4) { out.append(s) }
@@ -824,6 +844,31 @@ final class Inspector {
     /// Steps through a text element with markers: find the visual line under the
     /// cursor, then the word. A few dozen cheap calls, and the only way to get
     /// word-level precision out of Chrome and Electron.
+    static let textBlockRoles: Set<String> = ["AXGroup", "AXParagraph", "AXListItem", "AXHeading", "AXCell", "AXBlockquote"]
+
+    /// The nearest text above or below `p` inside `block` (the gap between two lines,
+    /// or a paragraph's padding): the point to use and the text element found there.
+    private func snapToLine(block: AXUIElement, blockFrame: CGRect, at p: CGPoint, tolerance: CGFloat = 16) -> (CGPoint, AXUIElement)? {
+        func text(at q: CGPoint) -> (CGPoint, AXUIElement)? {
+            guard blockFrame.contains(q), let e = hit(q) else { return nil }
+            let n = node(e)
+            return Self.webTextLeafRoles.contains(n.role) && (n.frame?.insetBy(dx: -2, dy: -2).contains(q) ?? false) ? (q, e) : nil
+        }
+        // Above and below first (between lines), then sideways (past a line's end, or
+        // in front of an indented line).
+        var d: CGFloat = 3
+        while d <= tolerance {
+            if let f = text(at: CGPoint(x: p.x, y: p.y - d)) ?? text(at: CGPoint(x: p.x, y: p.y + d)) { return f }
+            d += 3
+        }
+        d = 10
+        while d <= 120 {
+            if let f = text(at: CGPoint(x: p.x - d, y: p.y)) ?? text(at: CGPoint(x: p.x + d, y: p.y)) { return f }
+            d += 10
+        }
+        return nil
+    }
+
     private func walkToWord(host: AXUIElement, leaf: AXUIElement, at p: CGPoint, clip: CGRect)
         -> (marker: CFTypeRef, line: Scope, word: Scope?)? {
         guard let r = host.parameterized(AXAttr.markerRangeForElement, leaf), CFGetTypeID(r) == AXTextMarkerRangeGetTypeID() else { return nil }

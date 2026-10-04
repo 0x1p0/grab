@@ -53,6 +53,10 @@ final class KeyTap {
 
     private var thread: Thread?
     private var runLoop: CFRunLoop?
+    /// Modifier keys only: the one thing Grab listens to all the time.
+    private var flagsTap: CFMachPort?
+    /// Key presses and mouse events: switched on only while ⌥ is held, so typing
+    /// and moving the mouse cost Grab nothing the rest of the time.
     private var keyTap: CFMachPort?
     private var mouseTap: CFMachPort?
 
@@ -69,7 +73,6 @@ final class KeyTap {
     private var suppressed = false
     private var armed = false
     private var holdStart: CFAbsoluteTime = 0
-    private var lastTyped: CFAbsoluteTime = 0
     private var needsMotion = false
     private var motion: CGFloat = 0
     private var lastMouse: CGPoint?
@@ -77,7 +80,7 @@ final class KeyTap {
     private var armTimer: CFRunLoopTimer?
     private var lastScrollPost: CFAbsoluteTime = 0
 
-    var isRunning: Bool { keyTap != nil }
+    var isRunning: Bool { flagsTap != nil }
 
     // MARK: Lifecycle
 
@@ -103,10 +106,11 @@ final class KeyTap {
     func stop() {
         guard let rl = runLoop else { return }
         perform { [self] in
-            for tap in [keyTap, mouseTap].compactMap({ $0 }) {
+            for tap in [flagsTap, keyTap, mouseTap].compactMap({ $0 }) {
                 CGEvent.tapEnable(tap: tap, enable: false)
                 CFMachPortInvalidate(tap)
             }
+            flagsTap = nil
             keyTap = nil
             mouseTap = nil
             CFRunLoopStop(rl)
@@ -139,22 +143,34 @@ final class KeyTap {
     private func installTaps() -> Bool {
         let refcon = Unmanaged.passUnretained(self).toOpaque()
 
-        let keyMask: CGEventMask =
-            (1 << CGEventType.flagsChanged.rawValue) |
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.keyUp.rawValue)
+        // An active tap for modifiers, so a fast ⌥C can't overtake it: the key tap
+        // below is switched on before the C reaches anyone.
+        guard let ft = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: 1 << CGEventType.flagsChanged.rawValue,
+            callback: { _, type, event, refcon in
+                let me = Unmanaged<KeyTap>.fromOpaque(refcon!).takeUnretainedValue()
+                return me.handleFlagsEvent(type: type, event: event)
+            },
+            userInfo: refcon
+        ) else { return false }
 
         guard let kt = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
-            eventsOfInterest: keyMask,
+            eventsOfInterest: (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue),
             callback: { _, type, event, refcon in
                 let me = Unmanaged<KeyTap>.fromOpaque(refcon!).takeUnretainedValue()
                 return me.handleKey(type: type, event: event)
             },
             userInfo: refcon
-        ) else { return false }
+        ) else {
+            CFMachPortInvalidate(ft)
+            return false
+        }
 
         // Mouse events only need observing, so a listen-only tap keeps the
         // pointer completely unaffected by anything we do.
@@ -180,18 +196,24 @@ final class KeyTap {
         )
 
         let rl = CFRunLoopGetCurrent()
-        let ks = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, kt, 0)
-        CFRunLoopAddSource(rl, ks, .commonModes)
-        CGEvent.tapEnable(tap: kt, enable: true)
-        keyTap = kt
-
-        if let mt {
-            let ms = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mt, 0)
-            CFRunLoopAddSource(rl, ms, .commonModes)
-            CGEvent.tapEnable(tap: mt, enable: true)
-            mouseTap = mt
+        for tap in [ft, kt, mt].compactMap({ $0 }) {
+            CFRunLoopAddSource(rl, CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0), .commonModes)
         }
+        CGEvent.tapEnable(tap: ft, enable: true)
+        CGEvent.tapEnable(tap: kt, enable: false)
+        if let mt { CGEvent.tapEnable(tap: mt, enable: false) }
+        flagsTap = ft
+        keyTap = kt
+        mouseTap = mt
         return true
+    }
+
+    /// Key and mouse taps run only while they're needed.
+    private func updateTaps() {
+        let keys = optionHeld || !swallowedKeyUps.isEmpty
+        let mouse = optionHeld && !suppressed
+        if let keyTap, CGEvent.tapIsEnabled(tap: keyTap) != keys { CGEvent.tapEnable(tap: keyTap, enable: keys) }
+        if let mouseTap, CGEvent.tapIsEnabled(tap: mouseTap) != mouse { CGEvent.tapEnable(tap: mouseTap, enable: mouse) }
     }
 
     // MARK: Event handling (tap thread)
@@ -199,14 +221,23 @@ final class KeyTap {
     private static let otherModifiers: CGEventFlags = [.maskCommand, .maskControl, .maskShift]
     private static let chordModifiers: CGEventFlags = [.maskCommand, .maskControl]
 
+    private func handleFlagsEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        switch type {
+        case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            if let flagsTap { CGEvent.tapEnable(tap: flagsTap, enable: true) }
+        case .flagsChanged:
+            handleFlags(event.flags)
+            updateTaps()
+        default:
+            break
+        }
+        return Unmanaged.passUnretained(event)
+    }
+
     private func handleKey(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            if let keyTap { CGEvent.tapEnable(tap: keyTap, enable: true) }
-            return Unmanaged.passUnretained(event)
-
-        case .flagsChanged:
-            handleFlags(event.flags)
+            updateTaps()
             return Unmanaged.passUnretained(event)
 
         case .keyDown:
@@ -214,7 +245,10 @@ final class KeyTap {
 
         case .keyUp:
             let code = event.getIntegerValueField(.keyboardEventKeycode)
-            if swallowedKeyUps.remove(code) != nil { return nil }
+            if swallowedKeyUps.remove(code) != nil {
+                if !optionHeld { updateTaps() }
+                return nil
+            }
             return Unmanaged.passUnretained(event)
 
         default:
@@ -249,13 +283,24 @@ final class KeyTap {
         lastMouse = nil
         suppressed = chord || !cfg.enabled
         guard !suppressed else { return }
-        needsMotion = holdStart - lastTyped < 0.45
+        // Typing a moment ago (⌥← word jumps): wait for the mouse to move before arming.
+        // The system knows when the last key went down; no need to watch typing.
+        needsMotion = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 0.45
         scheduleArm(after: cfg.armDelay)
     }
 
     private func endHold() {
         optionHeld = false
         cancelArmTimer()
+        if !swallowedKeyUps.isEmpty {
+            // Their key-ups will come in a moment; after that the key tap goes quiet.
+            let t = CFRunLoopTimerCreateWithHandler(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 1, 0, 0, 0) { [weak self] _ in
+                guard let self, !self.optionHeld else { return }
+                self.swallowedKeyUps.removeAll()
+                self.updateTaps()
+            }
+            CFRunLoopAddTimer(CFRunLoopGetCurrent(), t, .commonModes)
+        }
         if armed {
             armed = false
             post(.disarm)
@@ -265,6 +310,7 @@ final class KeyTap {
 
     private func suppress(notify: TapAction) {
         suppressed = true
+        updateTaps()
         cancelArmTimer()
         if armed {
             armed = false
@@ -301,10 +347,7 @@ final class KeyTap {
         let pass = Unmanaged.passUnretained(event)
         let code = event.getIntegerValueField(.keyboardEventKeycode)
 
-        guard optionHeld else {
-            lastTyped = CFAbsoluteTimeGetCurrent()
-            return pass
-        }
+        guard optionHeld else { return pass }
         guard !suppressed else { return pass }
         if !event.flags.intersection(Self.chordModifiers).isEmpty {
             suppress(notify: .disarm)
@@ -384,7 +427,7 @@ final class KeyTap {
     private func handleMouse(type: CGEventType, event: CGEvent) {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            if let mouseTap { CGEvent.tapEnable(tap: mouseTap, enable: true) }
+            updateTaps()
         case .scrollWheel:
             // Scrolling under an armed overlay moves the content; cached layouts go stale.
             let now = CFAbsoluteTimeGetCurrent()

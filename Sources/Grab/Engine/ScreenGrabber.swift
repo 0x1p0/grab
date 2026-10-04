@@ -221,13 +221,12 @@ enum PixelReader {
 
 // MARK: - Vision
 
-struct OCRLine {
+struct OCRLine: Codable {
     let text: String
     let rect: CGRect
-    let candidate: VNRecognizedText
 }
 
-struct Barcode {
+struct Barcode: Codable {
     let payload: String
     let kind: String
     let rect: CGRect
@@ -247,7 +246,7 @@ enum VisionEngine {
             // Icons and textures produce stray one-letter "words"; skip the unconfident ones.
             let letters = t.filter { $0.isLetter || $0.isNumber }.count
             if c.confidence < 0.3 || (letters < 2 && c.confidence < 0.95) { return nil }
-            return OCRLine(text: c.string, rect: cap.screenRect(forNormalized: o.boundingBox), candidate: c)
+            return OCRLine(text: c.string, rect: cap.screenRect(forNormalized: o.boundingBox))
         }
     }
 
@@ -268,20 +267,6 @@ enum VisionEngine {
             prev = l.rect
         }
         return out
-    }
-
-    static func word(in line: OCRLine, at p: CGPoint, capture: Capture) -> (String, CGRect)? {
-        let s = line.candidate.string
-        var result: (String, CGRect)?
-        s.enumerateSubstrings(in: s.startIndex..<s.endIndex, options: .byWords) { sub, range, _, stop in
-            guard let sub, let box = try? line.candidate.boundingBox(for: range) else { return }
-            let r = capture.screenRect(forNormalized: box.boundingBox)
-            if r.insetBy(dx: -2, dy: -3).contains(p) {
-                result = (sub, r)
-                stop = true
-            }
-        }
-        return result
     }
 
     static func barcodes(_ cap: Capture) -> [Barcode] {

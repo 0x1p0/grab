@@ -3,6 +3,8 @@ import Observation
 
 extension Notification.Name {
     static let grabSettingsChanged = Notification.Name("GrabSettingsChanged")
+    /// Settings asks the current mascot to show off.
+    static let grabMascotPreview = Notification.Name("GrabMascotPreview")
 }
 
 /// User preferences, persisted to UserDefaults.
@@ -39,6 +41,8 @@ final class Settings {
     var snapHaptics: Bool { didSet { save("snapHaptics", snapHaptics) } }
     /// Preferred grab type per app (bundle identifier → GrabMode raw value).
     var appRules: [String: Int] { didSet { save("appRules", appRules) } }
+    /// Who carries each grab to the menu bar (`MascotKind` raw value).
+    var mascot: String { didSet { save("mascot", mascot) } }
     var grabCount: Int { didSet { d.set(grabCount, forKey: "grabCount") } }
     var hasOnboarded: Bool { didSet { d.set(hasOnboarded, forKey: "hasOnboarded") } }
 
@@ -63,6 +67,7 @@ final class Settings {
             "protectSecrets": true,
             "snapHaptics": true,
             "appRules": [String: Int](),
+            "mascot": "snap",
             "grabCount": 0,
             "hasOnboarded": false,
         ])
@@ -85,6 +90,7 @@ final class Settings {
         protectSecrets = d.bool(forKey: "protectSecrets")
         snapHaptics = d.bool(forKey: "snapHaptics")
         appRules = d.dictionary(forKey: "appRules") as? [String: Int] ?? [:]
+        mascot = d.string(forKey: "mascot") ?? "snap"
         grabCount = d.integer(forKey: "grabCount")
         hasOnboarded = d.bool(forKey: "hasOnboarded")
     }

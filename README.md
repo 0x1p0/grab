@@ -150,13 +150,42 @@ Native editors and Safari report exact character positions. VS Code-style editor
 | **Images** | Image · **subject only** · color palette · data URI |
 | **Files** | File · path · name · app icon at 1024 px |
 
+## Mascots
+
+Every grab gets carried up to the menu bar, by a mascot of your choice (Settings → Feel → Mascot):
+
+| | |
+|---|---|
+| **Snap** (default) | A jelly critter in Grab's colors whose hands are the logo's viewfinder corners. The border around your grab *becomes* its hands: they clamp the thing into a little card and Snap hops it up to the menu bar. |
+| **Clawsy** | An arcade claw machine: rides along the top of the screen, drops on its cable, clamps, lifts, slides home. |
+| **Beamy** | A tiny saucer that abducts your copy with a tractor beam. |
+| **Ribbit** | A frog in the menu bar with a very sticky tongue. Gulp. |
+| **Classic** · **Off** | The original flying chip, or nothing at all. |
+
+Each has its own little sounds, the menu bar icon lights up the moment the grab lands, and Reduce Motion turns them off.
+
 ## Privacy
 
 - **Secrets stay secret.** API keys, tokens, private keys and Wi-Fi passwords are marked concealed (clipboard managers skip them), kept out of history, and cleared from the clipboard after a minute.
 - **Password fields are never read.** In native apps and in browsers.
-- **Nothing is written to disk.** History and the shelf live in memory only.
-- **On-device.** OCR, barcode detection, translation and AI (Apple Intelligence) run on your Mac. The only network request is for exchange rates, and it sends nothing but currency codes (you can turn it off).
+- **Nothing is kept on disk.** History and the shelf live in memory only; files made for dragging or Quick Look are temporary.
+- **On-device.** OCR, barcode detection, translation and AI (Apple Intelligence) run on your Mac. See below for the only two times Grab goes online.
 - **Never in your captures.** The overlay is hidden from screenshots and screen recordings by default.
+
+### Permissions, explained
+
+| | What it's for | When it's used | What Grab never does | Without it |
+|---|---|---|---|---|
+| **Accessibility** (required) | Noticing ⌥ and C, and reading what's under your pointer: the text, links, files and tables apps already describe to tools like VoiceOver | Modifier keys all the time; other keys and the pointer only while ⌥ is held | Click, type, move windows or read password fields. Nothing you type is recorded | Grab can't work |
+| **Screen Recording** (optional) | Images as they appear, colors, QR codes, and text inside pictures, video and apps that don't describe themselves (on-device OCR) | Only during a hold, only around the pointer; Grab's own overlay is excluded | Record video, upload or keep screenshots | Text, links, files and code still copy; images, colors, QR and OCR are off |
+
+No other permissions. Grab goes online only for currency exchange rates (currency codes only, can be turned off) and, when you copy a web image, to fetch the original file from the address your browser already loaded it from.
+
+### Light
+
+- **~15 MB, 0% CPU, zero wakeups when idle.** Grab listens only to modifier keys until you hold ⌥; key presses and the mouse are observed only during a hold. Permission checks stop once both are granted.
+- **Vision runs in a helper.** OCR, QR scanning and subject lifting happen in a short-lived `Grab --vision-worker` process that starts when you hold ⌥ and quits after ~25 s idle, so its models' memory goes back to the system. If it ever fails, the work runs in-process.
+- **Nothing lingers.** Captures aren't kept after they're read, every cache is dropped when you release ⌥, freed memory is handed back to macOS, and history keeps images compressed.
 
 <details>
 <summary><b>Precision and details</b></summary>
@@ -170,11 +199,10 @@ Native editors and Safari report exact character positions. VS Code-style editor
 - **Exact colors.** Sampled through the system's color-managed capture path, so the hex you copy is the hex the page specified, even on P3/HDR displays. A magnifier loupe shows the exact pixel.
 - **Gets out of the way.** ⌥-click, ⌥-drag, ⌥⇧ shortcuts and typing with ⌥ behave as before; Grab only activates for a deliberate hold. If you were just typing it waits for the mouse to move, so ⌥← / ⌥→ word-jumping keeps working. Apps where ⌥ means something else can be excluded from the menu bar.
 - **Feel.** Synthesized sounds, trackpad haptics, a spring-animated border with a sweeping sheen, a Liquid Glass HUD and a chip that flies to the menu bar when you copy. Respects Reduce Motion.
-- **Recent grabs.** The menu bar keeps your last grabs; press 1–9 to copy one again, or **Search History…** by text, app or page.
+- **History, by app.** The menu bar shows recent grabs and a **By App** submenu; **Open History…** (⌘F) has search, type filters (text, links, images, colors, files, QR), grouping by app or by time, and keyboard control (↑ ↓, ⏎ copies, ⌘⌫ removes). Memory only, never written to disk.
 - **Per-app preferences.** "In Figma, prefer Color", "In Safari, prefer Link", from the menu bar or Settings.
 - **Automation.** `grab://copy?mode=text` grabs what's under the pointer (bind it to a key in Shortcuts), plus `grab://history`, `grab://shelf`, `grab://pause`, `resume` and `toggle`.
 - **Accessibility.** VoiceOver announces what's targeted and what was copied; *Increase Contrast* gets a thicker, solid border.
-- **Light.** ~0% CPU when idle, ~1% while the overlay is up.
 - **Secure input.** When another app turns on Secure Keyboard Entry, macOS hides keystrokes from every app, Grab included; the HUD tells you when that's the case.
 - **Typing ç.** With *Instant ⌥C* on (default), ⌥C always grabs. If you type ç with ⌥C, turn it off in Settings.
 

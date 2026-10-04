@@ -8,26 +8,38 @@ final class Sound {
 
     enum Effect: CaseIterable {
         case copy, tick, scope, bump, error
+        // Mascots
+        case boing, zip, plop, clank, beam, gulp
     }
 
     private var pools: [Effect: [AVAudioPlayer]] = [:]
     private var cursor: [Effect: Int] = [:]
 
+    /// Only the copy sound is made up front; the rest are synthesized the first
+    /// time they play, so unused sounds cost no memory.
     func prepare() {
-        guard pools.isEmpty else { return }
-        for effect in Effect.allCases {
-            let data = Synth.wav(Synth.render(effect))
-            pools[effect] = (0..<3).compactMap { _ in
-                let p = try? AVAudioPlayer(data: data, fileTypeHint: AVFileType.wav.rawValue)
-                p?.prepareToPlay()
-                return p
-            }
+        _ = pool(for: .copy)
+    }
+
+    private func pool(for effect: Effect) -> [AVAudioPlayer] {
+        if let p = pools[effect] { return p }
+        let data = Synth.wav(Synth.render(effect))
+        // Two voices for sounds that can overlap quickly, one for the rest.
+        let voices = [.copy, .tick, .scope, .zip].contains(effect) ? 2 : 1
+        let made = (0..<voices).compactMap { _ -> AVAudioPlayer? in
+            let p = try? AVAudioPlayer(data: data, fileTypeHint: AVFileType.wav.rawValue)
+            p?.prepareToPlay()
+            return p
         }
+        pools[effect] = made
+        return made
     }
 
     func play(_ effect: Effect) {
         let s = Settings.shared
-        guard s.soundEnabled, let pool = pools[effect], !pool.isEmpty else { return }
+        guard s.soundEnabled else { return }
+        let pool = pool(for: effect)
+        guard !pool.isEmpty else { return }
         let i = (cursor[effect] ?? 0) % pool.count
         cursor[effect] = i + 1
         let p = pool[i]
@@ -43,6 +55,7 @@ final class Sound {
         case .scope: 0.45
         case .bump: 0.5
         case .error: 0.7
+        case .boing, .zip, .plop, .clank, .beam, .gulp: 0.42
         }
     }
 }
@@ -66,6 +79,7 @@ enum Synth {
         var attack = 0.0025
         var harmonics: [(Double, Double)] = [(2, 0.28), (3.01, 0.06)]
         var glide = 0.0
+        var glideTime = 0.04
     }
 
     static func render(_ e: Sound.Effect) -> [Float] {
@@ -96,6 +110,40 @@ enum Synth {
                 Note(freq: 392.0, start: 0, amp: 0.38, decay: 0.06, harmonics: [(2, 0.25), (3, 0.1)]),
                 Note(freq: 311.13, start: 0.075, amp: 0.38, decay: 0.09, harmonics: [(2, 0.25), (3, 0.1)]),
             ], click: 0.0, peak: 0.45)
+        case .boing:
+            // A springy upward "boing".
+            return mix(duration: 0.24, notes: [
+                Note(freq: 330, start: 0, amp: 0.4, decay: 0.09, attack: 0.002, harmonics: [(2, 0.18)], glide: 1.4, glideTime: 0.12),
+                Note(freq: 660, start: 0.01, amp: 0.1, decay: 0.05, harmonics: [], glide: 1.0, glideTime: 0.1),
+            ], click: 0.02, peak: 0.36)
+        case .zip:
+            // A quick rising swish.
+            return mix(duration: 0.16, notes: [
+                Note(freq: 700, start: 0, amp: 0.25, decay: 0.05, attack: 0.004, harmonics: [(1.5, 0.3), (2.01, 0.2)], glide: 1.6, glideTime: 0.1),
+            ], click: 0.08, peak: 0.26)
+        case .plop:
+            // A bubbly drop into the menu bar.
+            return mix(duration: 0.14, notes: [
+                Note(freq: 520, start: 0, amp: 0.4, decay: 0.035, attack: 0.001, harmonics: [(2, 0.15)], glide: 0.9, glideTime: 0.05),
+            ], click: 0.0, peak: 0.34)
+        case .clank:
+            // Metal prongs closing.
+            return mix(duration: 0.18, notes: [
+                Note(freq: 1850, start: 0, amp: 0.3, decay: 0.03, attack: 0.0006, harmonics: [(2.76, 0.4), (5.4, 0.2)]),
+                Note(freq: 980, start: 0.012, amp: 0.25, decay: 0.05, attack: 0.0006, harmonics: [(2.76, 0.3)]),
+            ], click: 0.15, peak: 0.34)
+        case .beam:
+            // A wobbly tractor beam.
+            return mix(duration: 0.34, notes: [
+                Note(freq: 880, start: 0, amp: 0.22, decay: 0.16, attack: 0.02, harmonics: [(1.012, 0.9), (2, 0.15)], glide: 0.5, glideTime: 0.3),
+                Note(freq: 1320, start: 0.05, amp: 0.1, decay: 0.12, attack: 0.02, harmonics: [(1.01, 0.8)], glide: 0.4, glideTime: 0.25),
+            ], click: 0.0, peak: 0.3)
+        case .gulp:
+            // Down the hatch.
+            return mix(duration: 0.22, notes: [
+                Note(freq: 260, start: 0, amp: 0.4, decay: 0.05, attack: 0.003, harmonics: [(2, 0.3)], glide: -0.35, glideTime: 0.08),
+                Note(freq: 190, start: 0.07, amp: 0.38, decay: 0.06, attack: 0.003, harmonics: [(2, 0.3)], glide: -0.3, glideTime: 0.08),
+            ], click: 0.0, peak: 0.38)
         }
     }
 
@@ -109,7 +157,7 @@ enum Synth {
                 let t = Double(i - first) / rate
                 let env = (1 - exp(-t / note.attack)) * exp(-t / note.decay)
                 if env < 0.0001 && t > note.attack * 4 { break }
-                let f = note.freq * (1 + note.glide * min(1, t / 0.04))
+                let f = note.freq * (1 + note.glide * min(1, t / note.glideTime))
                 phase += 2 * .pi * f / rate
                 var v = sin(phase)
                 for (mult, a) in note.harmonics { v += a * sin(phase * mult + 0.3) }

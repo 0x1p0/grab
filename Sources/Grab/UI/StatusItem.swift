@@ -32,13 +32,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     /// Lights the icon up as the flying chip lands.
-    func celebrate() {
+    func celebrate(at landing: TimeInterval = 0.58) {
         celebrateWork.forEach { $0.cancel() }
         let on = DispatchWorkItem { [weak self] in self?.item.button?.image = Icons.statusIcon(filled: true) }
         let off = DispatchWorkItem { [weak self] in self?.item.button?.image = Icons.statusIcon() }
         celebrateWork = [on, off]
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.58, execute: on)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.25, execute: off)
+        DispatchQueue.main.asyncAfter(deadline: .now() + landing, execute: on)
+        DispatchQueue.main.asyncAfter(deadline: .now() + landing + 0.67, execute: off)
     }
 
     // MARK: Menu
@@ -68,18 +68,30 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(none)
         } else {
             menu.addItem(NSMenuItem.sectionHeader(title: "Recent Grabs"))
-            for (i, h) in history.enumerated() {
-                let mi = NSMenuItem(title: h.title.oneLine.truncated(48), action: #selector(recopy(_:)), keyEquivalent: i < 9 ? "\(i + 1)" : "")
-                mi.keyEquivalentModifierMask = []
-                mi.target = self
-                mi.representedObject = h.id
-                mi.image = image(for: h)
-                if #available(macOS 14.4, *) {
-                    mi.subtitle = "\(h.mode.title) · \(Self.relative.localizedString(for: h.date, relativeTo: Date()))"
-                }
-                menu.addItem(mi)
+            for (i, h) in history.prefix(8).enumerated() {
+                menu.addItem(historyItem(h, key: i < 9 ? "\(i + 1)" : ""))
             }
-            let search = NSMenuItem(title: "Search History…", action: #selector(showHistory), keyEquivalent: "f")
+            // Everything, grouped by the app it came from.
+            let groups = History.shared.byApp(history)
+            if groups.count > 1 || history.count > 8 {
+                let byApp = NSMenuItem(title: "By App", action: nil, keyEquivalent: "")
+                byApp.image = Icons.symbol("square.stack.3d.up")
+                let sub = NSMenu()
+                for g in groups {
+                    let app = NSMenuItem(title: g.app, action: nil, keyEquivalent: "")
+                    let icon = AppIcons.icon(g.bundleID).copy() as! NSImage
+                    icon.size = NSSize(width: 16, height: 16)
+                    app.image = icon
+                    if #available(macOS 14.4, *) { app.subtitle = g.items.count == 1 ? "1 grab" : "\(g.items.count) grabs" }
+                    let items = NSMenu()
+                    for h in g.items.prefix(30) { items.addItem(historyItem(h, key: "", showApp: false)) }
+                    app.submenu = items
+                    sub.addItem(app)
+                }
+                byApp.submenu = sub
+                menu.addItem(byApp)
+            }
+            let search = NSMenuItem(title: "Open History…", action: #selector(showHistory), keyEquivalent: "f")
             search.target = self
             search.image = Icons.symbol("magnifyingglass")
             menu.addItem(search)
@@ -157,6 +169,23 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(quit)
     }
 
+    private func historyItem(_ h: History.Item, key: String, showApp: Bool = true) -> NSMenuItem {
+        var title = h.isSecret ? "Secret ••••••" : Formats.oneLine(h.text ?? h.title).truncated(48)
+        if let t = h.text, t.uppercased().hasPrefix("WIFI:") { title = "Wi-Fi “\(Formats.wifi(t).network ?? "network")”" }
+        if case .file(let u) = h.payload { title = u.lastPathComponent }
+        let mi = NSMenuItem(title: title, action: #selector(recopy(_:)), keyEquivalent: key)
+        mi.keyEquivalentModifierMask = []
+        mi.target = self
+        mi.representedObject = h.id
+        mi.image = image(for: h)
+        if #available(macOS 14.4, *) {
+            let when = Date().timeIntervalSince(h.date) < 60 ? "just now" : Self.relative.localizedString(for: h.date, relativeTo: Date())
+            mi.subtitle = ([h.mode.title] + (showApp ? [h.appName].compactMap { $0 } : []) + [when])
+                .joined(separator: " · ")
+        }
+        return mi
+    }
+
     private static let relative: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
@@ -181,7 +210,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func recopy(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID,
               let h = History.shared.items.first(where: { $0.id == id }) else { return }
-        Clipboard.write(h.payload)
+        Clipboard.write(h.payload, secret: h.isSecret)
         Sound.shared.play(.copy)
     }
 

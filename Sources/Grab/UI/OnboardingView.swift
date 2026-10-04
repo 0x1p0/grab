@@ -71,8 +71,9 @@ struct OnboardingView: View {
                 colors: [Color(hex: 0x2F7BFF), Color(hex: 0x22C3EE)],
                 title: "Accessibility",
                 badge: "Required",
-                detail: "Lets Grab see what's under your cursor and hear ⌥C.",
+                detail: "Lets Grab notice ⌥ and read what's under your pointer, like VoiceOver does. It never types, clicks or reads passwords.",
                 granted: permissions.accessibility,
+                reason: .accessibility,
                 actionTitle: "Grant Access",
                 action: { permissions.requestAccessibility() }
             )
@@ -81,8 +82,9 @@ struct OnboardingView: View {
                 colors: [Color(hex: 0xFF7A1A), Color(hex: 0xF43F5E)],
                 title: "Screen Recording",
                 badge: "For images & colors",
-                detail: "Needed for images, colors, QR codes and reading text inside pictures.",
+                detail: "Lets Grab look around your pointer while you hold ⌥, for images, colors, QR codes and text in pictures. Never recorded or saved.",
                 granted: permissions.screenRecording,
+                reason: .screenRecording,
                 actionTitle: permissions.screenRecordingNeedsRelaunch ? "Relaunch Grab" : "Grant Access",
                 action: {
                     if permissions.screenRecordingNeedsRelaunch { Permissions.relaunch() } else { permissions.requestScreenRecording() }
@@ -136,6 +138,7 @@ private struct PermissionCard: View {
     let badge: String
     let detail: String
     let granted: Bool
+    var reason: PermissionReason?
     let actionTitle: String
     let action: () -> Void
     var note: String?
@@ -152,6 +155,7 @@ private struct PermissionCard: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     Text(title).font(.system(size: 14, weight: .semibold))
+                    if let reason { WhyButton(reason: reason) }
                     Text(badge)
                         .font(.system(size: 9.5, weight: .semibold))
                         .padding(.horizontal, 6)
@@ -352,5 +356,25 @@ enum PixelArt {
         let img = NSImage(size: size)
         img.addRepresentation(rep)
         return img
+    }
+}
+
+/// "Why?" next to a permission: the full explanation in a popover.
+private struct WhyButton: View {
+    let reason: PermissionReason
+    @State private var shown = false
+    var body: some View {
+        Button { shown.toggle() } label: {
+            Text("Why?").font(.system(size: 10.5, weight: .semibold))
+        }
+        .buttonStyle(.link)
+        .popover(isPresented: $shown, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Why Grab needs \(reason.title)").font(.system(size: 13, weight: .bold))
+                PermissionExplainer(reason: reason)
+            }
+            .padding(16)
+            .frame(width: 340)
+        }
     }
 }

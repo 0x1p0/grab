@@ -170,21 +170,95 @@ final class History {
     struct Item: Identifiable {
         let id = UUID()
         let mode: GrabMode
-        let payload: Payload
         let title: String
         let date = Date()
         let thumbnail: NSImage?
         let color: RGBAColor?
-        /// App (and page) it came from.
+        /// App it came from, and the page or window title.
+        var appName: String? = nil
+        var bundleID: String? = nil
         var source: String? = nil
         var sourceURL: URL? = nil
         var isSecret = false
+        /// What a copy-again puts back. Images are kept compressed (a screenshot is
+        /// tens of megabytes uncompressed) and decoded only when they're copied again.
+        private let stored: Payload?
+        private let image: CompressedImage?
+
+        init(mode: GrabMode, payload: Payload, title: String, thumbnail: NSImage?, color: RGBAColor?) {
+            self.mode = mode
+            self.title = title
+            self.thumbnail = thumbnail
+            self.color = color
+            if case .image(let img, let size) = payload {
+                stored = nil
+                image = CompressedImage(img, pointSize: size)
+            } else {
+                stored = payload
+                image = nil
+            }
+        }
+
+        var payload: Payload {
+            if let stored { return stored }
+            if let image, let img = image.cgImage { return .image(img, pointSize: image.pointSize) }
+            return .text(title)
+        }
+
+        /// The text this grab holds, for search and previews (not for images).
+        var text: String? {
+            switch stored {
+            case .text(let t), .code(let t): t
+            case .link(let u): u.absoluteString
+            case .file(let u): u.path
+            case .color(_, let f): f
+            default: nil
+            }
+        }
+
+        var kind: Kind {
+            switch stored {
+            case .link: .links
+            case .file: .files
+            case .color: .colors
+            case .code: .codes
+            case .none: .images
+            case .text: mode == .qr ? .codes : .text
+            case .image: .images
+            }
+        }
 
         /// Everything searchable about the item.
         var searchText: String {
-            var parts = [title, mode.title, source ?? "", sourceURL?.absoluteString ?? ""]
-            if !isSecret, case .text(let t) = payload { parts.append(String(t.prefix(4_000))) }
+            var parts = [title, mode.title, appName ?? "", source ?? "", sourceURL?.absoluteString ?? ""]
+            if !isSecret, let t = text { parts.append(String(t.prefix(4_000))) }
             return parts.joined(separator: " ")
+        }
+    }
+
+    /// Filters in the history window.
+    enum Kind: String, CaseIterable, Identifiable {
+        case text, links, images, colors, files, codes
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .text: "Text"
+            case .links: "Links"
+            case .images: "Images"
+            case .colors: "Colors"
+            case .files: "Files"
+            case .codes: "QR"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .text: "text.quote"
+            case .links: "link"
+            case .images: "photo"
+            case .colors: "paintpalette"
+            case .files: "doc"
+            case .codes: "qrcode"
+            }
         }
     }
 
@@ -196,7 +270,50 @@ final class History {
         if items.count > limit { items.removeLast(items.count - limit) }
     }
 
+    func remove(_ id: UUID) { items.removeAll { $0.id == id } }
+
     func clear() { items.removeAll() }
+
+    /// Items grouped by the app they came from, most recently used app first.
+    func byApp(_ list: [Item]) -> [(app: String, bundleID: String?, items: [Item])] {
+        var order: [String] = []
+        var groups: [String: [Item]] = [:]
+        for i in list {
+            let key = i.appName ?? "Other"
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(i)
+        }
+        return order.map { ($0, groups[$0]?.first?.bundleID, groups[$0] ?? []) }
+    }
+}
+
+/// An image kept as PNG: compressed in the background right after it's added, after
+/// which the full bitmap is let go.
+final class CompressedImage: @unchecked Sendable {
+    let pointSize: CGSize
+    private let lock = NSLock()
+    private var bitmap: CGImage?
+    private var png: Data?
+
+    init(_ image: CGImage, pointSize: CGSize) {
+        self.pointSize = pointSize
+        bitmap = image
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+            lock.lock()
+            png = data
+            if data != nil { bitmap = nil }
+            lock.unlock()
+        }
+    }
+
+    var cgImage: CGImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let bitmap { return bitmap }
+        guard let png, let rep = NSBitmapImageRep(data: png) else { return nil }
+        return rep.cgImage
+    }
 }
 
 /// Grabs collected with ⌥⇧C, shown in a floating shelf you can reorder.

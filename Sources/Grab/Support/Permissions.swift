@@ -16,9 +16,21 @@ final class Permissions {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var requestedScreenRecording = false
 
+    /// Watches for changes only while something is still missing; once both are
+    /// granted there's nothing to poll (Grab re-checks when you hold ⌥ or open a window).
     func startMonitoring() {
         timer?.invalidate()
-        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.refresh() }
+        timer = nil
+        guard !(accessibility && screenRecording) else { return }
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.refresh()
+            if self.accessibility && self.screenRecording {
+                self.timer?.invalidate()
+                self.timer = nil
+            }
+        }
+        t.tolerance = 0.5
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
@@ -27,6 +39,7 @@ final class Permissions {
         let ax = AXIsProcessTrusted()
         let sr = CGPreflightScreenCaptureAccess()
         guard ax != accessibility || sr != screenRecording else { return }
+        if !(ax && sr) && timer == nil { DispatchQueue.main.async { [weak self] in self?.startMonitoring() } }
         accessibility = ax
         if sr != screenRecording {
             screenRecording = sr

@@ -5,13 +5,18 @@ import SwiftUI
 /// Pixels we've already looked at for a given rectangle.
 private struct Analysis {
     let date: Date
-    let capture: Capture
+    /// Where the pixels came from. (The pixels themselves aren't kept: a full
+    /// capture is tens of megabytes, and only its layout is needed afterwards.)
+    let captureRect: CGRect
+    let captureScale: CGFloat
     let layout: TextLayout
     let didOCR: Bool
     /// The capture covers the whole scope, so `layout` holds all of its text.
     let covers: Bool
     let thumbnail: CGImage?
     let pixels: PixelMap?
+    /// The scope this was taken for, so nearby cursor positions can reuse it.
+    let scopeFrame: CGRect
 
     var fullText: String? {
         didOCR && covers ? layout.text.cleanedForClipboard.nonBlank : nil
@@ -41,6 +46,30 @@ private struct StickyScope {
         tablePart = s.tableRef?.part
     }
 
+    /// How big a text scope is: word 0 … paragraph 3 (OCR'd text counts the same).
+    static func level(_ k: ScopeKind) -> Int? {
+        switch k {
+        case .word, .ocrWord: 0
+        case .line, .ocrLine: 1
+        case .sentence: 2
+        case .paragraph, .ocrParagraph: 3
+        default: nil
+        }
+    }
+
+    /// The scope matching this choice, or for text the next size up that exists
+    /// here (Line when there's no word under the cursor).
+    func pick(from scopes: [Scope]) -> Scope? {
+        if let exact = scopes.first(where: matches) { return exact }
+        guard codeKind == nil, let want = Self.level(kind) else { return nil }
+        return scopes
+            .compactMap { s -> (Scope, Int)? in
+                guard s.code == nil, let l = Self.level(s.kind), l >= want else { return nil }
+                return (s, l)
+            }
+            .min { $0.1 < $1.1 }?.0
+    }
+
     func matches(_ s: Scope) -> Bool {
         guard s.kind == kind, s.code?.kind == codeKind, s.tableRef?.part == tablePart else { return false }
         if let e = element {
@@ -59,7 +88,8 @@ final class Session {
 
     var onLostOption: (() -> Void)?
     var statusItemFrame: (() -> CGRect?)?
-    var onCopied: (() -> Void)?
+    /// After a copy; the argument is when the grab lands in the menu bar icon.
+    var onCopied: ((TimeInterval) -> Void)?
     /// Ends the ⌥ hold for the key tap too (after opening a panel, Quick Look…).
     var onEndHold: (() -> Void)?
 
@@ -77,6 +107,8 @@ final class Session {
     private(set) var mode: GrabMode = .text
 
     private var pendingCopy = false
+    /// C was pressed while pixels were still being read (holds the ⇧ flag).
+    private var waitingCopy: Bool?
     /// Disarm as soon as the pending copy finishes (grab:// URLs).
     private var oneShot = false
     private var copying = false
@@ -162,6 +194,7 @@ final class Session {
         sticky = nil
         userMode = nil
         pendingCopy = false
+        waitingCopy = nil
         analyses.removeAll()
         analyzing.removeAll()
         qrScans.removeAll()
@@ -183,6 +216,7 @@ final class Session {
 
         lastPoint = pointer()
         dirty = true
+        Permissions.shared.refresh()
 
         let s = Settings.shared
         var t = Transaction()
@@ -209,6 +243,7 @@ final class Session {
 
         if Permissions.shared.screenRecording {
             Task { await ScreenGrabber.shared.warmUp() }
+            Task { await VisionService.shared.prewarm() }
         }
         requestInspection()
         startTimer()
@@ -231,6 +266,9 @@ final class Session {
 
     func disarm(cancelled: Bool = false) {
         guard armed else { return }
+        if !cancelled { flushWaitingCopy(force: true) }
+        waitingCopy = nil
+        releaseCaches()
         armed = false
         debugHold = false
         generation += 1
@@ -246,9 +284,44 @@ final class Session {
         }
     }
 
+    /// Everything learned during a hold is for that hold only: let it go, so Grab
+    /// sits at its minimum between uses.
+    private func releaseCaches() {
+        analyses.removeAll()
+        analyzing.removeAll()
+        qrScans.removeAll()
+        qrScanning.removeAll()
+        focusScans.removeAll()
+        focusScanning.removeAll()
+        codeModels.removeAll()
+        codeLoading.removeAll()
+        resolved.removeAll()
+        resolving.removeAll()
+        resolvedTables.removeAll()
+        resolvingTables.removeAll()
+        linkCache.removeAll()
+        smartCache.removeAll()
+        model.loupe = nil
+        axQueue.async { [inspector] in inspector.reset() }
+        scheduleMemoryRelief()
+    }
+
+    /// Freed captures leave pages the allocator would otherwise keep cached; hand
+    /// them back to macOS once the hold, and any copy it started, are over.
+    private func scheduleMemoryRelief(after delay: TimeInterval = 1.2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, !self.armed else { return }
+            if self.copying || self.model.fly != nil {
+                self.scheduleMemoryRelief(after: 1)
+                return
+            }
+            DispatchQueue.global(qos: .utility).async { _ = malloc_zone_pressure_relief(nil, 0) }
+        }
+    }
+
     private func startTimer() {
         timer?.invalidate()
-        let t = Timer(timeInterval: 1.0 / 90.0, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -310,12 +383,9 @@ final class Session {
         augmentCode(&ins)
         detectSmart(&ins)
 
-        var selected: Scope?
-        if let st = sticky {
-            selected = ins.scopes.first(where: st.matches)
-            if selected == nil { sticky = nil }
-        }
-        if selected == nil { selected = ins.scopes[safe: ins.defaultIndex] }
+        // The size picked with ↑ ↓ holds for the whole ⌥ hold, even where it
+        // doesn't exist for a moment (a space between words, a gap between lines).
+        let selected = sticky.flatMap { $0.pick(from: ins.scopes) } ?? ins.scopes[safe: ins.defaultIndex]
 
         inspection = ins
         selectedID = selected?.id
@@ -325,6 +395,7 @@ final class Session {
         scheduleCode()
         pushModel()
         targetChanged()
+        flushWaitingCopy()
 
         if pendingCopy {
             pendingCopy = false
@@ -341,8 +412,8 @@ final class Session {
         detectSmart(&ins)
         inspection = ins
         if let st = sticky {
-            if !ins.scopes.contains(where: { $0.id == selectedID }) {
-                selectedID = ins.scopes.first(where: st.matches)?.id ?? ins.scopes[safe: ins.defaultIndex]?.id
+            if !ins.scopes.contains(where: { $0.id == selectedID }) || !(ins.scopes.first { $0.id == selectedID }.map(st.matches) ?? false) {
+                selectedID = (st.pick(from: ins.scopes) ?? ins.scopes[safe: ins.defaultIndex])?.id
             }
         } else {
             selectedID = ins.scopes[safe: ins.defaultIndex]?.id
@@ -352,6 +423,7 @@ final class Session {
         scheduleAnalysis()
         scheduleCode()
         pushModel()
+        flushWaitingCopy()
     }
 
     // MARK: Code learned from pixels
@@ -374,7 +446,7 @@ final class Session {
         codeLoading.insert(key)
         let gen = generation
         Task { @MainActor [weak self] in
-            let built = await Task.detached(priority: .userInitiated) { Self.buildCodeModel(region) }.value
+            let built = await Task.detached(priority: .userInitiated) { await Self.buildCodeModel(region) }.value
             guard let self else { return }
             self.codeLoading.remove(key)
             guard self.armed, gen == self.generation, let built else { return }
@@ -408,16 +480,9 @@ final class Session {
         return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
     }
 
-    nonisolated private static func buildCodeModel(_ region: CodeRegion) -> CodeModel? {
-        let sem = DispatchSemaphore(value: 0)
-        var cap: Capture?
-        Task.detached {
-            cap = try? await ScreenGrabber.shared.capture(region.rect, maxPixels: 9_000_000)
-            sem.signal()
-        }
-        sem.wait()
-        guard let cap else { return nil }
-        let fast = VisionEngine.recognize(cap, accurate: false, correction: false)
+    nonisolated private static func buildCodeModel(_ region: CodeRegion) async -> CodeModel? {
+        guard let cap = try? await ScreenGrabber.shared.capture(region.rect, maxPixels: 9_000_000) else { return nil }
+        let fast = await VisionService.shared.recognize(cap, accurate: false)
         // Split by line-number gutters (sidebars and other panes fall away); else use everything.
         var bands = CodeGridBuilder.bands(in: fast, region: region.rect).map { band in
             (band, CodeGridBuilder.rows(from: fast.filter { band.contains($0.rect.center) }))
@@ -459,7 +524,7 @@ final class Session {
         }
         // No usable source (or unsaved edits): rebuild the code from the pixels themselves.
         let band = bands.first?.0 ?? region.rect
-        let accurateLines = VisionEngine.recognize(cap, accurate: true, correction: false).filter { band.contains($0.rect.center) }
+        let accurateLines = await VisionService.shared.recognize(cap, accurate: true).filter { band.contains($0.rect.center) }
         let accurate = CodeGridBuilder.rows(from: accurateLines)
         guard let (text, grid) = CodeGridBuilder.reconstruct(rows: accurate, region: band) else { return nil }
         let a = CodeAnalysis(text: text, language: region.language ?? .guess(text), terminal: region.isTerminal)
@@ -488,6 +553,8 @@ final class Session {
         lastScroll = CACurrentMediaTime()
         codeModels.removeAll()
         analyses.removeAll()
+        qrScans.removeAll()
+        focusScans.removeAll()
         dirty = true
     }
 
@@ -581,13 +648,13 @@ final class Session {
         Task { @MainActor [weak self] in
             let layout = await Task.detached(priority: .userInitiated) { () -> TextLayout in
                 guard band.width > 8, band.height > 8, let cap = try? await ScreenGrabber.shared.capture(band) else { return TextLayout() }
-                return await TextReader.read(cap, barcodes: false)
+                return await VisionService.shared.read(cap, barcodes: false)
             }.value
             guard let self else { return }
             self.focusScanning.remove(cell)
             guard self.armed, gen == self.generation else { return }
             self.focusScans[cell] = (Date(), layout)
-            if layout.hit(p) != nil { self.reapply() }
+            self.reapply()
         }
     }
 
@@ -612,7 +679,7 @@ final class Session {
         var codesSeen = Set<String>()
 
         // A code found by the cursor scan wins: it's exactly where you're pointing.
-        if let scan = qrScans[qrCell(p)], Date().timeIntervalSince(scan.date) < 4, let code = scan.code,
+        if let scan = qrScans[qrCell(p)], let code = scan.code,
            code.rect.insetBy(dx: -10, dy: -10).contains(p) {
             let b = barcodeScope(code, link: ins.scopes.first(where: { $0.linkURL != nil && $0.frame.contains(p) })?.linkURL)
             added.append(b)
@@ -626,12 +693,17 @@ final class Session {
 
         for i in ins.scopes.indices {
             let s = ins.scopes[i]
-            guard let region = analysisRegion(s, at: p), let a = analyses[region.key],
-                  Date().timeIntervalSince(a.date) < 4 else { continue }
+            guard let a = analysis(for: s, at: p) else { continue }
+            #if DEBUG
+            let exact = analysisRegion(s, at: p).map { analyses[$0.key] != nil } ?? false
+            debugTrace.append("\(s.label) exact=\(exact) cap=\(a.captureRect.integral) ocr=\(a.didOCR) paras=\(a.layout.paragraphs.count) hit=\(a.layout.hit(p) != nil) lines=\(a.layout.paragraphs.flatMap(\.lines).filter { $0.rect.insetBy(dx: -6, dy: -6).contains(p) }.map { "\($0.rect.integral):\($0.text.prefix(16))" })")
+            #endif
             ins.scopes[i].analysisDone = true
             if !s.isBackdrop && a.covers { ins.scopes[i].thumbnail = a.thumbnail }
-            ins.scopes[i].pixelSize = CGSize(width: s.frame.width * a.capture.scale, height: s.frame.height * a.capture.scale)
-            if a.didOCR, s.text?.nonBlank == nil, !s.textPending, let t = a.fullText {
+            ins.scopes[i].pixelSize = CGSize(width: s.frame.width * a.captureScale, height: s.frame.height * a.captureScale)
+            // Icons and logos: whatever OCR "reads" in them is noise.
+            let icon = s.isVisual && min(s.frame.width, s.frame.height) < 48
+            if a.didOCR, !icon, s.text?.nonBlank == nil, !s.textPending, let t = a.fullText, Self.meaningful(t) {
                 ins.scopes[i].ocrText = t
                 ins.scopes[i].textIsOCR = true
             }
@@ -650,16 +722,17 @@ final class Session {
 
             // Text the accessibility tree doesn't know about: in images, canvases,
             // video, games, remote screens…
-            guard a.didOCR, s.isBackdrop || (s.text?.nonBlank == nil && !s.textPending) else { continue }
+            guard a.didOCR, !icon, s.isBackdrop || (s.text?.nonBlank == nil && !s.textPending) else { continue }
             // Text detection depends on the crop; when the wide pass missed what's under
             // the cursor, a tight band around it gets it.
             var found = a.layout.hit(p)
             if found == nil {
                 let cell = focusCell(p)
-                if let f = focusScans[cell], Date().timeIntervalSince(f.date) < 4 {
+                if let f = focusScans[cell] {
                     found = f.layout.hit(p)
+                    if Date().timeIntervalSince(f.date) > Self.refreshAfter { scheduleFocusOCR(at: p, within: a.captureRect) }
                 } else {
-                    scheduleFocusOCR(at: p, within: a.capture.rect)
+                    scheduleFocusOCR(at: p, within: a.captureRect)
                 }
             }
             // A table in the picture (a screenshot of a spreadsheet, a receipt…).
@@ -669,9 +742,14 @@ final class Session {
                 ts.analysisDone = true
                 added.append(ts)
             }
+            // A stray glyph read off an icon isn't text worth offering.
+            if let h = found, !Self.meaningful(h.paragraph.text) { found = nil }
             guard let hit = found else {
                 // No text here: maybe a picture, icon or colored block that nothing describes.
-                if let obj = a.pixels?.object(at: p), obj.rect.width * obj.rect.height < s.area * 0.85 {
+                // Only once the focused text pass has also come back empty, or a line of
+                // text it's about to find would be taken for a picture.
+                let focusDone = focusScans[focusCell(p)] != nil
+                if focusDone, let obj = a.pixels?.object(at: p), obj.rect.width * obj.rect.height < s.area * 0.85 {
                     var o = Scope(kind: .element, frame: obj.rect, label: obj.isSolid ? "Swatch" : "Image")
                     o.isVisual = !obj.isSolid
                     o.isBackdrop = obj.isSolid
@@ -711,6 +789,51 @@ final class Session {
         }
     }
 
+    /// Recognized text with at least two letters or digits; single glyphs read off
+    /// icons and photos are noise.
+    static func meaningful(_ t: String) -> Bool {
+        t.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.count >= 2
+    }
+
+    /// Pixel results stay valid for the whole hold (until something scrolls); after
+    /// this long they're refreshed in the background for content that changes,
+    /// like video, while the old result keeps showing.
+    private static let refreshAfter: TimeInterval = 6
+
+    /// The analysis for `s` around `p`: the exact grid cell's, or while that one is
+    /// still running, any earlier one of the same scope that covers the point.
+    /// Without this, moving between cells blanked the OCR result for a moment.
+    private func analysis(for s: Scope, at p: CGPoint) -> Analysis? {
+        let exact = analysisRegion(s, at: p).flatMap { analyses[$0.key] }
+        if let e = exact, !cutsText(e, at: p) { return e }
+        let others = analyses.values.filter {
+            $0.scopeFrame.isNearlyEqual(s.frame, tolerance: 2) && $0.captureRect.insetBy(dx: 24, dy: 24).contains(p) && !cutsText($0, at: p)
+        }
+        return others.max { margin($0, at: p) < margin($1, at: p) } ?? exact
+    }
+
+    /// How far `p` is from the capture edges that cut through the scope (edges that
+    /// are the scope's own don't count).
+    private func margin(_ a: Analysis, at p: CGPoint) -> CGFloat {
+        let c = a.captureRect, f = a.scopeFrame
+        var m = CGFloat.infinity
+        if c.minX > f.minX + 1 { m = min(m, p.x - c.minX) }
+        if c.maxX < f.maxX - 1 { m = min(m, c.maxX - p.x) }
+        if c.minY > f.minY + 1 { m = min(m, p.y - c.minY) }
+        if c.maxY < f.maxY - 1 { m = min(m, c.maxY - p.y) }
+        return m
+    }
+
+    /// The text under `p` runs into an edge where this capture cut the scope, so it
+    /// would be read half ("over year, driven by…").
+    private func cutsText(_ a: Analysis, at p: CGPoint) -> Bool {
+        guard let hit = a.layout.hit(p) else { return margin(a, at: p) < 120 }
+        let r = hit.paragraph.rect, c = a.captureRect, f = a.scopeFrame
+        let tol: CGFloat = 6
+        return (c.minX > f.minX + 1 && r.minX - c.minX < tol) || (c.maxX < f.maxX - 1 && c.maxX - r.maxX < tol)
+            || (c.minY > f.minY + 1 && r.minY - c.minY < tol) || (c.maxY < f.maxY - 1 && c.maxY - r.maxY < tol)
+    }
+
     private func scheduleAnalysis() {
         scheduleQRScan()
         guard Permissions.shared.screenRecording, let s = current, inspection?.codeRegion == nil else { return }
@@ -718,29 +841,31 @@ final class Session {
         let wantsPixels = s.isVisual || s.isBackdrop || (s.text?.nonBlank == nil && !s.textPending)
         guard wantsPixels else { return }
         guard let (key, frame, covers) = analysisRegion(s, at: lastPoint) else { return }
-        if analyses[key] != nil || analyzing.contains(key) { return }
+        if analyzing.contains(key) { return }
+        if let existing = analyses[key], Date().timeIntervalSince(existing.date) < Self.refreshAfter { return }
 
         dwell?.cancel()
         let ocr = s.isBackdrop || s.text?.nonBlank == nil
         let gen = generation
         let work = DispatchWorkItem { [weak self] in
-            self?.runAnalysis(key: key, frame: frame, ocr: ocr, covers: covers, gen: gen)
+            self?.runAnalysis(key: key, frame: frame, scopeFrame: s.frame, ocr: ocr, covers: covers, gen: gen)
         }
         dwell = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
-    private func runAnalysis(key: String, frame: CGRect, ocr: Bool, covers: Bool, gen: Int) {
+    private func runAnalysis(key: String, frame: CGRect, scopeFrame: CGRect, ocr: Bool, covers: Bool, gen: Int) {
         guard armed, gen == generation, !analyzing.contains(key) else { return }
         analyzing.insert(key)
         Task { @MainActor [weak self] in
             let analysis = await Task.detached(priority: .userInitiated) { () -> Analysis? in
                 guard let cap = try? await ScreenGrabber.shared.capture(frame, maxPixels: 8_000_000) else { return nil }
-                var layout = ocr ? await TextReader.read(cap) : TextLayout()
-                if layout.barcodes.isEmpty { layout.barcodes = BarcodeScanner.detect(in: cap) }
-                let thumb = Thumbnail.make(cap.image, maxSide: 200)
-                return Analysis(date: Date(), capture: cap, layout: layout, didOCR: ocr, covers: covers, thumbnail: thumb,
-                                pixels: covers ? nil : PixelMap(cap))
+                var layout = ocr ? await VisionService.shared.read(cap) : TextLayout()
+                if layout.barcodes.isEmpty { layout.barcodes = await VisionService.shared.barcodes(cap) }
+                // A thumbnail is only shown for things captured whole.
+                let thumb = covers ? Thumbnail.make(cap.image, maxSide: 200) : nil
+                return Analysis(date: Date(), captureRect: cap.rect, captureScale: cap.scale, layout: layout, didOCR: ocr, covers: covers, thumbnail: thumb,
+                                pixels: covers ? nil : PixelMap(cap), scopeFrame: scopeFrame)
             }.value
             guard let self else { return }
             self.analyzing.remove(key)
@@ -758,7 +883,7 @@ final class Session {
         if s.kind == .barcode || (s.kind.isTextRange && !s.textIsOCR) || s.kind == .code { return }
         let p = lastPoint
         let cell = qrCell(p)
-        if let cached = qrScans[cell], Date().timeIntervalSince(cached.date) < 4 { return }
+        if let cached = qrScans[cell], Date().timeIntervalSince(cached.date) < Self.refreshAfter { return }
         guard !qrScanning.contains(cell) else { return }
         qrDwell?.cancel()
         let gen = generation
@@ -879,7 +1004,7 @@ final class Session {
             let hasAX = s.text?.nonBlank != nil && !s.textIsOCR
             if hasAX || s.textPending {
                 out.append(ModeOption(mode: .text, enabled: true, title: "Text", symbol: "text.quote"))
-            } else if s.bestText != nil || (sr && !s.analysisDone) {
+            } else if s.bestText != nil || (sr && !s.analysisDone && !(s.isVisual && min(s.frame.width, s.frame.height) < 48)) {
                 out.append(ModeOption(mode: .text, enabled: true, title: "OCR", symbol: "text.viewfinder"))
             } else if !sr {
                 out.append(ModeOption(mode: .text, enabled: false, title: "OCR", symbol: "text.viewfinder"))
@@ -1145,6 +1270,40 @@ final class Session {
             pendingCopy = true
             return
         }
+        guard !copying, waitingCopy == nil else { return }
+        // Pixels are still being read here: copy once they say what's under the
+        // cursor, instead of copying the whole window's text.
+        if awaitingPixels(s) {
+            waitingCopy = append
+            model.busy = true
+            scheduleAnalysis()
+            let gen = generation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                guard let self, gen == self.generation else { return }
+                self.flushWaitingCopy(force: true)
+            }
+            return
+        }
+        performCopy(s, append: append)
+    }
+
+    /// The HUD can't yet say what's under the cursor: OCR may still find text there.
+    private func awaitingPixels(_ s: Scope) -> Bool {
+        guard Permissions.shared.screenRecording, !s.analysisDone, s.kind != .barcode, s.code == nil,
+              !s.kind.isTextRange, inspection?.codeRegion == nil else { return false }
+        if s.isBackdrop { return true }
+        return mode == .text && s.text?.nonBlank == nil && !s.textPending && s.ocrText == nil
+    }
+
+    private func flushWaitingCopy(force: Bool = false) {
+        guard let append = waitingCopy, let s = current else { return }
+        guard force || !awaitingPixels(s) else { return }
+        waitingCopy = nil
+        model.busy = false
+        performCopy(s, append: append)
+    }
+
+    private func performCopy(_ s: Scope, append: Bool) {
         guard !copying else { return }
         copying = true
         let m = mode
@@ -1269,7 +1428,7 @@ final class Session {
             guard case .image(let img, let size) = p else { break }
             switch f {
             case "subject":
-                guard let cut = await Task.detached(priority: .userInitiated, operation: { ImageTools.subject(of: img) }).value else {
+                guard let cut = await VisionService.shared.subject(of: img) else {
                     return failed("No subject found")
                 }
                 let k = img.width > 0 ? size.width / CGFloat(img.width) : 1
@@ -1316,7 +1475,7 @@ final class Session {
                 // Read the pixels properly: full resolution, accurate model, language correction.
                 if let t = s.ocrText?.cleanedForClipboard.nonBlank { return .success(.text(t)) }
                 let cap = try await ScreenGrabber.shared.capture(s.frame, maxPixels: 16_000_000)
-                let layout = await Task.detached { await TextReader.read(cap) }.value
+                let layout = await VisionService.shared.read(cap)
                 if let t = layout.text.cleanedForClipboard.nonBlank { return .success(.text(t)) }
                 throw GrabError.noText
 
@@ -1449,24 +1608,72 @@ final class Session {
         model.flash += 1
         showToast(Toast(success: true, title: title, detail: detail, mode: m, color: color, thumb: thumb))
 
-        if let item = statusItemFrame?() {
-            let fly = Fly(from: m == .color ? point : s.frame.center, to: item.center, mode: m, color: color)
-            model.fly = fly
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
-                if self?.model.fly?.id == fly.id { self?.model.fly = nil }
-            }
-        }
+        let landing = launchMascot(payload: payload, scope: s, mode: m, at: point, color: color, thumb: thumb)
 
         let historyThumb = thumb.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
         var item = History.Item(mode: m, payload: payload, title: secret ? "Secret" : historyTitle, thumbnail: historyThumb, color: color)
-        item.source = [inspection?.appName, inspection?.sourceTitle].compactMap { $0 }.reduce(into: [String]()) { out, x in
-            if !out.contains(where: { $0.contains(x) || x.contains($0) }) { out.append(x) }
-        }.joined(separator: " · ").nonBlank
+        // The page or window title, unless it just repeats the app's name.
+        item.source = inspection?.sourceTitle.flatMap { t in t == inspection?.appName ? nil : t.nonBlank }
         item.sourceURL = inspection?.sourceURL
+        item.appName = inspection?.appName
+        item.bundleID = inspection?.bundleID
         item.isSecret = secret
         History.shared.add(item)
         Settings.shared.grabCount += 1
-        onCopied?()
+        onCopied?(landing)
+    }
+
+    // MARK: Mascot
+
+    /// Sends the grab to the menu bar with the chosen mascot. Returns when it lands.
+    @discardableResult
+    private func launchMascot(payload: Payload, scope s: Scope, mode m: GrabMode, at point: CGPoint, color: RGBAColor?, thumb: CGImage?) -> TimeInterval {
+        let kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
+        guard kind != .off, let item = statusItemFrame?() else { return 0.3 }
+        let colors = Theme.colors(for: m, sample: color)
+        let content: Cargo.Content
+        switch payload {
+        case .text(let t):
+            if s.code != nil { content = .code(t.components(separatedBy: "\n").prefix(3).joined(separator: "\n")) }
+            else { content = .text(String(Formats.oneLine(t).prefix(48))) }
+        case .link(let u): content = .symbol("link", u.host ?? "link")
+        case .code(let c): content = .symbol(s.barcodeKind == nil || s.barcodeKind == "QR" ? "qrcode" : "barcode", String(c.prefix(18)))
+        case .file(let f): content = .symbol(f.hasDirectoryPath ? "folder.fill" : "doc.fill", f.lastPathComponent)
+        case .image(let img, _): content = thumb.map { .image($0) } ?? (Thumbnail.make(img, maxSide: 160).map { .image($0) } ?? .symbol("photo", "Image"))
+        case .color(let c, _): content = .color(c)
+        }
+        let from = m == .color ? point : s.frame.center
+        let target = m == .color ? CGRect(x: point.x - 18, y: point.y - 18, width: 36, height: 36) : s.frame
+        return fly(Fly(from: from, to: item.center, mode: m, color: color, target: target, kind: kind,
+                       cargo: Cargo(content: content, colors: colors)))
+    }
+
+    private func fly(_ f: Fly) -> TimeInterval {
+        overlay.show()
+        model.fly = f
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if !reduceMotion {
+            for (at, effect) in f.kind.cues {
+                DispatchQueue.main.asyncAfter(deadline: .now() + at) { Sound.shared.play(effect) }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + f.kind.duration + 0.05) { [weak self] in
+            guard let self, self.model.fly?.id == f.id else { return }
+            self.model.fly = nil
+            if !self.armed && self.model.toast == nil { self.overlay.hide(after: 0.05) }
+        }
+        return reduceMotion ? 0.3 : f.kind.dropTime
+    }
+
+    /// Settings: let the chosen mascot carry a hello from `point` to the menu bar.
+    func previewMascot(at point: CGPoint) {
+        let kind = MascotKind(rawValue: Settings.shared.mascot) ?? .snap
+        guard kind != .off, let item = statusItemFrame?() else { return }
+        let landing = fly(Fly(from: point, to: item.center, mode: .text, color: nil,
+                              target: CGRect(x: point.x - 60, y: point.y - 24, width: 120, height: 48), kind: kind,
+                              cargo: Cargo(content: .text("Hello from Grab"), colors: Theme.brand)))
+        Sound.shared.play(.copy)
+        onCopied?(landing)
     }
 
     private func fail(_ error: Error, mode m: GrabMode) {
@@ -1721,6 +1928,8 @@ final class Session {
     /// Inspect a fixed point instead of the mouse (debug hooks), so tests never move the pointer.
     var debugPoint: CGPoint?
 
+    var debugTrace: [String] = []
+
     func debugAction(_ name: String) {
         if let a = GrabAction(rawValue: name) { perform(a) }
     }
@@ -1765,6 +1974,8 @@ final class Session {
             out["codeRegion"] = ins.codeRegion.map { "\($0.title) \($0.rect)" } ?? ""
             out["source"] = [ins.sourceTitle ?? "", ins.sourceURL?.absoluteString ?? ""]
             out["chain"] = ins.debugChain
+            out["trace"] = Array(debugTrace.suffix(6))
+            debugTrace.removeAll()
             out["preview"] = "\(model.preview)".truncated(300)
         }
         return out

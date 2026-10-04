@@ -16,6 +16,11 @@ struct ScreenGeometry: Equatable {
         visible = ScreenSpace.toAX(s.visibleFrame)
     }
 
+    init(frame: CGRect) {
+        self.frame = frame
+        visible = frame
+    }
+
     var size: CGSize { frame.size }
     func local(_ r: CGRect) -> CGRect { r.offsetBy(dx: -frame.minX, dy: -frame.minY) }
     func local(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x - frame.minX, y: p.y - frame.minY) }
@@ -98,9 +103,8 @@ final class OverlayController {
     func hide(after delay: TimeInterval) {
         hideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.model.visible, self.model.toast == nil else { return }
+            guard let self, !self.model.visible, self.model.toast == nil, self.model.fly == nil else { return }
             self.shown = false
-            self.model.fly = nil
             self.windows.forEach { $0.orderOut(nil) }
         }
         hideWork = work

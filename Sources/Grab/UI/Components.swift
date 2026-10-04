@@ -145,3 +145,88 @@ enum FileIcon {
         return NSWorkspace.shared.icon(for: UTType(filenameExtension: url.pathExtension) ?? .data)
     }
 }
+
+// MARK: - Permission explanations
+
+/// Why Grab asks for each permission, in plain words. Shown in onboarding and Settings.
+enum PermissionReason: String, CaseIterable, Identifiable {
+    case accessibility, screenRecording
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .accessibility: "Accessibility"
+        case .screenRecording: "Screen Recording"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .accessibility: "Required. Lets Grab notice ⌥ and read what's under your pointer, the same way VoiceOver does."
+        case .screenRecording: "Optional. Lets Grab look at the pixels around your pointer for images, colors, QR codes and text inside pictures."
+        }
+    }
+
+    /// (symbol, heading, text)
+    var points: [(String, String, String)] {
+        switch self {
+        case .accessibility:
+            return [
+                ("keyboard", "Notices ⌥ and C",
+                 "Grab watches only modifier keys like ⌥. While you hold ⌥ it also sees key presses, so C, the arrows, Tab and the action keys work. Nothing you type is recorded, and keys that aren't Grab's go straight through to your app."),
+                ("cursorarrow.rays", "Reads what's under the pointer",
+                 "Apps describe their text, links, files, tables and buttons to accessibility tools. Grab asks for the thing under your pointer so it can copy the exact word, paragraph, link or file."),
+                ("hand.raised", "Never controls anything",
+                 "Grab doesn't click, type, move windows or change apps. It never reads password fields. What it reads isn't stored or sent anywhere; history lives in memory only."),
+                ("xmark.circle", "Without it",
+                 "Grab can't work: macOS won't tell it when ⌥ is held or what's under the pointer."),
+            ]
+        case .screenRecording:
+            return [
+                ("photo", "Copies what you see",
+                 "Images exactly as they appear, colors from any pixel, QR codes and barcodes, and text inside pictures, videos, games and apps that don't describe their content (on-device OCR)."),
+                ("scope", "Only while you hold ⌥",
+                 "Grab looks only at the area around your pointer, only during a hold. Its own border and HUD are left out of every capture."),
+                ("lock.shield", "Never records",
+                 "No video, nothing uploaded, no screenshots kept. OCR runs on your Mac in a short-lived helper that quits when you're done. (Quick Look and Open use a temporary file only when you ask, cleared at next launch.)"),
+                ("xmark.circle", "Without it",
+                 "Text, links, files and code still copy. Images, colors, QR codes and OCR are switched off. macOS asks you to relaunch Grab after you turn this on."),
+            ]
+        }
+    }
+}
+
+/// The full "why" for one permission.
+struct PermissionExplainer: View {
+    let reason: PermissionReason
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            ForEach(Array(reason.points.enumerated()), id: \.offset) { _, p in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: p.0)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(p.1).font(.system(size: 12, weight: .semibold))
+                        Text(p.2).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Everything else Grab touches, for completeness.
+struct OtherAccessNote: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("No other permissions", systemImage: "checkmark.shield").font(.system(size: 12, weight: .semibold))
+            Text("Grab never asks for your files, contacts, camera, microphone or location. It goes online only for currency exchange rates (only currency codes are sent; you can turn it off) and, when you copy a web image, to fetch the original file from the address your browser already loaded it from. Translation and AI run on-device with Apple's frameworks.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}

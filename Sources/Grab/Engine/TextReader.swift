@@ -4,8 +4,8 @@ import Vision
 
 /// Text read from pixels, with its structure: paragraphs → lines → words, all in
 /// global screen points. Plus any barcodes seen along the way.
-struct TextLayout {
-    struct Word {
+struct TextLayout: Codable {
+    struct Word: Codable {
         var text: String
         var rect: CGRect
         init(text: String, rect: CGRect) {
@@ -17,10 +17,10 @@ struct TextLayout {
             self.rect = rect
         }
     }
-    struct Line { var text: String; var rect: CGRect; var words: [Word] }
-    struct Paragraph { var text: String; var rect: CGRect; var lines: [Line] }
+    struct Line: Codable { var text: String; var rect: CGRect; var words: [Word] }
+    struct Paragraph: Codable { var text: String; var rect: CGRect; var lines: [Line] }
 
-    struct Table { var rect: CGRect; var rows: [[String]]
+    struct Table: Codable { var rect: CGRect; var rows: [[String]]
         var tsv: String { rows.map { $0.joined(separator: "\t") }.joined(separator: "\n") }
     }
 
@@ -45,17 +45,61 @@ struct TextLayout {
 }
 
 enum TextReader {
+    static let minConfidence: Float = 0.3
+
     /// Reads text (and barcodes) in a capture. Accurate recognition only: the fast
     /// model misses small text and garbles punctuation, which is what made OCR flaky.
     static func read(_ cap: Capture, correction: Bool = true, barcodes: Bool = true) async -> TextLayout {
         // Text down to ~7 px tall, whatever the size of the capture.
         let minHeight = Float(min(0.05, max(0.0015, 7.0 / Double(max(cap.image.height, 1)))))
         if #available(macOS 26.0, *) {
-            if let layout = await readDocument(cap, minHeight: minHeight, correction: correction, barcodes: barcodes) {
+            // The document recognizer gives paragraphs, tables and words, but now and
+            // then drops a whole line depending on the crop. A line recognizer runs
+            // alongside; anything it reads that the document pass missed is put back.
+            async let lineLayout = Task.detached(priority: .userInitiated) {
+                readLines(cap, minHeight: minHeight, correction: correction, barcodes: false)
+            }.value
+            if var layout = await readDocument(cap, minHeight: minHeight, correction: correction, barcodes: barcodes) {
+                merge(missingFrom: await lineLayout, into: &layout)
                 return layout
             }
+            var fallback = await lineLayout
+            if barcodes { fallback.barcodes = VisionEngine.barcodes(cap) }
+            return fallback
         }
         return readLines(cap, minHeight: minHeight, correction: correction, barcodes: barcodes)
+    }
+
+    /// Adds lines from `other` that `layout` doesn't have, into the paragraph they
+    /// continue (same column, next line down or up) or as paragraphs of their own.
+    static func merge(missingFrom other: TextLayout, into layout: inout TextLayout) {
+        let known = layout.paragraphs.flatMap(\.lines).map(\.rect)
+        func present(_ r: CGRect) -> Bool {
+            known.contains { k in
+                let i = k.intersection(r)
+                return !i.isNull && i.width * i.height > 0.3 * min(k.width * k.height, r.width * r.height)
+            }
+        }
+        for line in other.paragraphs.flatMap(\.lines) where !present(line.rect) {
+            let h = line.rect.height
+            if let pi = layout.paragraphs.firstIndex(where: { p in
+                guard let first = p.lines.first, let last = p.lines.last else { return false }
+                let aligned = abs(first.rect.minX - line.rect.minX) < h * 1.5
+                let similar = abs(first.rect.height - h) < h * 0.4
+                let below = line.rect.minY - last.rect.maxY, above = first.rect.minY - line.rect.maxY
+                return aligned && similar && ((below > -h * 0.5 && below < h * 0.9) || (above > -h * 0.5 && above < h * 0.9))
+            }) {
+                var p = layout.paragraphs[pi]
+                p.lines.append(line)
+                p.lines.sort { $0.rect.minY < $1.rect.minY }
+                p.text = p.lines.map(\.text).joined(separator: "\n")
+                p.rect = p.rect.union(line.rect)
+                layout.paragraphs[pi] = p
+            } else {
+                layout.paragraphs.append(TextLayout.Paragraph(text: line.text, rect: line.rect, lines: [line]))
+            }
+        }
+        layout.paragraphs.sort { $0.rect.minY != $1.rect.minY ? $0.rect.minY < $1.rect.minY : $0.rect.minX < $1.rect.minX }
     }
 
     @available(macOS 26.0, *)
@@ -75,11 +119,14 @@ enum TextReader {
                 containers.insert(title, at: 0)
             }
             for p in containers {
-                var lines: [TextLayout.Line] = p.lines.compactMap { l in
-                    guard let c = l.topCandidates(1).first, c.string.nonBlank != nil else { return nil }
-                    return TextLayout.Line(text: c.string, rect: cap.screenRect(forNormalized: l.boundingBox.cgRect), words: [])
+                // Each kept line with its recognized text (for splitting into words below).
+                // Low-confidence "lines" are glyphs read off icons and photos.
+                let kept: [(line: TextLayout.Line, text: RecognizedText)] = p.lines.compactMap { l in
+                    guard let c = l.topCandidates(1).first, c.string.nonBlank != nil, c.confidence >= minConfidence else { return nil }
+                    return (TextLayout.Line(text: c.string, rect: cap.screenRect(forNormalized: l.boundingBox.cgRect), words: []), c)
                 }
-                guard !lines.isEmpty else { continue }
+                guard !kept.isEmpty else { continue }
+                var lines = kept.map(\.line)
                 // Words: from the document if it has them, else from each line's own boxes.
                 let words: [TextLayout.Word] = (p.words ?? []).compactMap { w in
                     guard let c = w.topCandidates(1).first, let t = c.string.nonBlank else { return nil }
@@ -92,8 +139,8 @@ enum TextReader {
                         return mid >= lr.minY - 2 && mid <= lr.maxY + 2 && w.rect.midX >= lr.minX - 2 && w.rect.midX <= lr.maxX + 2
                     }.sorted { $0.rect.minX < $1.rect.minX }
                 }
-                for (i, l) in p.lines.enumerated() where i < lines.count && lines[i].words.isEmpty {
-                    if let c = l.topCandidates(1).first { lines[i].words = splitWords(c, cap: cap) }
+                for i in lines.indices where lines[i].words.isEmpty {
+                    lines[i].words = splitWords(kept[i].text, cap: cap)
                 }
                 let rect = cap.screenRect(forNormalized: p.boundingRegion.boundingBox.cgRect)
                     .union(lines.reduce(CGRect.null) { $0.union($1.rect) })
@@ -140,7 +187,7 @@ enum TextReader {
         try? handler.perform([req])
         var lines: [TextLayout.Line] = []
         for o in req.results ?? [] {
-            guard let c = o.topCandidates(1).first, c.string.nonBlank != nil else { continue }
+            guard let c = o.topCandidates(1).first, c.string.nonBlank != nil, c.confidence >= minConfidence else { continue }
             var words: [TextLayout.Word] = []
             let s = c.string
             s.enumerateSubstrings(in: s.startIndex..<s.endIndex, options: .byWords) { sub, range, _, _ in
@@ -224,7 +271,7 @@ enum BarcodeScanner {
         for side in [300.0, 720.0] as [CGFloat] {
             let r = CGRect(x: p.x - side / 2, y: p.y - side / 2, width: side, height: side).intersection(bounds)
             guard r.width > 24, r.height > 24, let cap = try? await ScreenGrabber.shared.capture(r, maxPixels: 4_000_000) else { continue }
-            let codes = detect(in: cap)
+            let codes = await VisionService.shared.barcodes(cap)
             if let hit = codes.first(where: { $0.rect.insetBy(dx: -10, dy: -10).contains(p) }) { return hit }
         }
         return nil

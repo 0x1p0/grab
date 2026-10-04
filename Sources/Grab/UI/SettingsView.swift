@@ -86,6 +86,7 @@ struct SettingsView: View {
                     Text("Spotlight")
                     Text("Gently dims everything except what you're about to grab.")
                 }
+                MascotPicker(selection: $settings.mascot)
                 Toggle("Keyboard hints in the HUD", isOn: $settings.showHints)
                 Toggle(isOn: $settings.overlayInRecordings) {
                     Text("Show overlay in screen recordings")
@@ -273,22 +274,25 @@ struct SettingsView: View {
 
             Section {
                 PermissionRow(
-                    title: "Accessibility",
-                    detail: "Find what's under the cursor and hear ⌥C",
+                    reason: .accessibility,
                     granted: permissions.accessibility,
                     action: { permissions.requestAccessibility() }
                 )
                 PermissionRow(
-                    title: "Screen Recording",
-                    detail: "Images, colors, QR codes and OCR",
+                    reason: .screenRecording,
                     granted: permissions.screenRecording,
                     actionTitle: permissions.screenRecordingNeedsRelaunch ? "Relaunch" : "Grant",
                     action: {
                         if permissions.screenRecordingNeedsRelaunch { Permissions.relaunch() } else { permissions.requestScreenRecording() }
                     }
                 )
+                OtherAccessNote().padding(.vertical, 2)
             } header: {
                 Text("Permissions")
+            } footer: {
+                Text("You can change these any time in System Settings → Privacy & Security.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -309,24 +313,31 @@ struct SettingsView: View {
 }
 
 private struct PermissionRow: View {
-    let title: String
-    let detail: String
+    let reason: PermissionReason
     let granted: Bool
     var actionTitle = "Grant"
     let action: () -> Void
+    @State private var expanded = false
 
     var body: some View {
-        LabeledContent {
-            if granted {
-                Label("Granted", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.system(size: 12, weight: .semibold))
-            } else {
-                Button(actionTitle, action: action)
+        VStack(alignment: .leading, spacing: 8) {
+            LabeledContent {
+                if granted {
+                    Label("Granted", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.system(size: 12, weight: .semibold))
+                } else {
+                    Button(actionTitle, action: action)
+                }
+            } label: {
+                Text(reason.title)
+                Text(reason.summary)
             }
-        } label: {
-            Text(title)
-            Text(detail)
+            DisclosureGroup(isExpanded: $expanded) {
+                PermissionExplainer(reason: reason).padding(.top, 6).padding(.leading, 2)
+            } label: {
+                Text("What it's for and what Grab never does").font(.system(size: 11.5)).foregroundStyle(.secondary)
+            }
         }
     }
 }
@@ -390,5 +401,49 @@ private struct ActionKeysGrid: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// Who carries each grab to the menu bar. Picking one makes it show off.
+private struct MascotPicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        let current = MascotKind(rawValue: selection) ?? .snap
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Mascot")
+                Text("Who carries each grab up to the menu bar. Click one to see it in action.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                ForEach(MascotKind.allCases) { kind in
+                    let on = kind == current
+                    Button {
+                        selection = kind.rawValue
+                        if kind != .off { NotificationCenter.default.post(name: .grabMascotPreview, object: nil) }
+                    } label: {
+                        VStack(spacing: 6) {
+                            MascotIdle(kind: kind).frame(height: 58)
+                            Text(kind.title).font(.system(size: 12, weight: .semibold, design: .rounded))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(on ? 0.07 : 0.025)))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(on ? AnyShapeStyle(LinearGradient(colors: Theme.brand, startPoint: .topLeading, endPoint: .bottomTrailing))
+                                                 : AnyShapeStyle(Color.primary.opacity(0.08)), lineWidth: on ? 2 : 1)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(kind.blurb)
+                }
+            }
+            Text(current.blurb).font(.system(size: 11.5)).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
     }
 }

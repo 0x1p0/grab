@@ -25,7 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         status = StatusItemController(app: self)
 
         session.statusItemFrame = { [weak self] in self?.status.buttonFrame() }
-        session.onCopied = { [weak self] in self?.status.celebrate() }
+        session.onCopied = { [weak self] landing in self?.status.celebrate(at: landing) }
+        NotificationCenter.default.addObserver(forName: .grabMascotPreview, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.session.previewMascot(at: ScreenSpace.mouseLocation()) }
+        }
         session.onLostOption = { [weak self] in self?.keyTap.resetHold() }
         session.onEndHold = { [weak self] in self?.keyTap.suppressCurrentHold() }
         keyTap.onAction = { [weak self] action in self?.session.handle(action) }
@@ -57,14 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissions.onChange = { [weak self] in self?.permissionsChanged() }
         permissions.startMonitoring()
         startTapIfPossible()
-        if permissions.screenRecording {
-            Task { await ScreenGrabber.shared.warmUp() }
-        }
-        // Load the text and barcode models now, not on the first grab.
-        Task.detached(priority: .utility) {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await TextReader.warmUp()
-        }
+        // Nothing heavy at launch: capture and Vision start when you first hold ⌥.
 
         if !settings.hasOnboarded || !permissions.accessibility {
             windows.showOnboarding()
@@ -206,6 +202,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "codedebug": session.debugCode(to: arg)
         case "append": session.copy(append: true)
         case "action": session.debugAction(arg)
+        case "mascotstills": MascotDebug.renderStills(to: arg)
+        case "historystill": HistoryDebug.snapshot(to: arg)
+        case "permstill":
+            let view = VStack(alignment: .leading, spacing: 18) {
+                ForEach(PermissionReason.allCases) { r in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(r.title).font(.system(size: 14, weight: .bold))
+                        Text(r.summary).font(.system(size: 12)).foregroundStyle(.secondary)
+                        PermissionExplainer(reason: r)
+                    }
+                }
+                OtherAccessNote()
+            }
+            .padding(20)
+            .frame(width: 480)
+            .background(Color(white: 0.12))
+            .environment(\.colorScheme, .dark)
+            let r = ImageRenderer(content: view)
+            r.scale = 2
+            if let img = r.cgImage {
+                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: arg))
+            }
+        case "mascot":
+            settings.mascot = arg
+            session.previewMascot(at: session.debugPoint ?? ScreenSpace.mouseLocation())
         case "at":
             let v = arg.split(separator: ",").compactMap { Double(String($0)) }
             session.debugPoint = v.count == 2 ? CGPoint(x: v[0], y: v[1]) : nil
