@@ -291,6 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if v.count == 2, AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), v[0], v[1], &found) == .success, let e = found {
                 AXUIElementSetAttributeValue(e, "AXFocused" as CFString, kCFBooleanTrue)
             }
+        case "settingspane":
+            SettingsNav.shared.pane = SettingsPane(rawValue: arg) ?? .general
         case "settingsscroll":
             // Scrolls the settings form to a y offset, for screenshots.
             func scrollView(in v: NSView) -> NSScrollView? {

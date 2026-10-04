@@ -30,12 +30,14 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     func showSettings() {
         if settings == nil {
             let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 540, height: 700),
+                contentRect: NSRect(x: 0, y: 0, width: 820, height: 600),
                 styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
             w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.isMovableByWindowBackground = true
             w.title = "Grab Settings"
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: SettingsView(openOnboarding: { [weak self] in self?.showOnboarding() }))
