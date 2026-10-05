@@ -54,6 +54,10 @@ if [ -n "${GRAB_RELEASE_P12:-}" ]; then
   security unlock-keychain -p "$KC_PASS" "$KC"
   security import "$GRAB_RELEASE_P12" -k "$KC" -P "${GRAB_RELEASE_P12_PASSWORD:-}" -T /usr/bin/codesign >/dev/null
   security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+  # On CI (a throwaway machine) codesign needs it in the search list; on your Mac it's left out.
+  if [ "${CI:-}" = "true" ]; then
+    security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+  fi
   IDENTITY=$(security find-identity -p codesigning "$KC" | awk '/"Grab Release"/ {print $2; exit}')
   if [ -z "$IDENTITY" ]; then
     echo "✗ GRAB_RELEASE_P12 doesn't hold the Grab Release certificate" >&2
