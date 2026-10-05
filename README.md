@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6">
   <img src="https://img.shields.io/badge/Apple%20Silicon-native-7C5CFF?style=flat-square" alt="Apple Silicon native">
   <img src="https://img.shields.io/badge/100%25-on--device-10B981?style=flat-square" alt="100% on-device">
-  <img src="https://img.shields.io/badge/status-private%20beta-EC4F7C?style=flat-square" alt="Private beta">
+  <img src="https://img.shields.io/badge/license-source--available-EC4F7C?style=flat-square" alt="Source-available">
 </p>
 
 <p align="center">
@@ -24,7 +24,8 @@
   <a href="#smart-formats">Smart formats</a> ·
   <a href="#privacy">Privacy</a> ·
   <a href="#install">Install</a> ·
-  <a href="#how-its-built">How it's built</a>
+  <a href="#how-its-built">How it's built</a> ·
+  <a href="#license">License</a>
 </p>
 
 <br>
@@ -252,26 +253,20 @@ No other permissions. Grab goes online only to check GitHub for a new version ab
 
 ## Install
 
-**Homebrew** (private for now: works for anyone with access to this repo):
+**Download:** `Grab-x.y.z.dmg` from [Releases](https://github.com/0x1p0/grab/releases): open it and drag Grab to Applications. Grab isn't notarized yet, so the first time a downloaded copy opens, macOS stops it: open **System Settings → Privacy & Security** and click **Open Anyway**.
 
-```bash
-brew install --cask 0x1p0/tap/grab
-```
+**Homebrew:** coming soon.
 
-It downloads with your GitHub login, from the GitHub CLI (`gh auth login`) or `HOMEBREW_GITHUB_API_TOKEN`. `brew upgrade` picks up new releases. Built Grab from source before? Delete that copy from Applications first; your settings stay.
-
-**Download:** `Grab-x.y.z.dmg` from [Releases](https://github.com/0x1p0/grab/releases): open it and drag Grab to Applications. Grab isn't notarized yet, so the first time a downloaded copy opens, macOS stops it: open **System Settings → Privacy & Security** and click **Open Anyway**. (The Homebrew install takes care of this for you.)
-
-Once Grab is public it keeps itself up to date: about once a day it checks GitHub for a new release and asks before installing. It only installs an update signed by the same developer as the copy you're running, and your settings and permissions carry over. **Check for Updates…** is in the menu bar.
+Grab keeps itself up to date: about once a day it checks GitHub for a new release and asks before installing. It only installs an update signed by the same developer as the copy you're running, and your settings and permissions carry over. **Check for Updates…** is in the menu bar.
 
 On first launch Grab asks for two permissions:
 
 - **Accessibility** (required): to see what's under the cursor and hear ⌥C.
 - **Screen Recording** (for images, colors, QR codes, OCR, boxes and live pins): macOS asks you to relaunch Grab after you turn it on.
 
-### Build from source
+### Development
 
-Requires macOS 14 or later (best on macOS 26+) and the Xcode command line tools.
+For the maintainer, and anyone given permission to build Grab (see [License](#license)). Requires macOS 14 or later (best on macOS 26+) and the Xcode command line tools.
 
 ```bash
 scripts/build.sh --install --run   # release build, signed, copied to /Applications, launched
@@ -359,6 +354,12 @@ scripts/promo/render.sh --stills 6.9 17.6  # PNG stills at those seconds
 ```
 
 </details>
+
+## License
+
+Grab is **source-available, not open source**. The code is public so you can read it and see exactly what Grab does with your data, but it isn't licensed for reuse: building, copying, modifying or redistributing it, in whole or in part, needs written permission. Issues and suggestions are welcome. See [LICENSE](LICENSE) for the full terms.
+
+© 2026 0x1p0. All rights reserved. The Grab name, icon and mascots aren't to be used without permission.
 
 <br>
 

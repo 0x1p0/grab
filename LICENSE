@@ -1,0 +1,46 @@
+Grab Source-Available License
+
+Copyright (c) 2026 0x1p0. All rights reserved.
+
+Grab is not open-source software. Its source code is published so that you can
+read it, learn from it, and see for yourself what Grab does with your data.
+Publishing it does not give you a license to use it in any other way.
+
+1. What you may do
+
+   a. View the source code on GitHub, and fork this repository on GitHub, as
+      GitHub's Terms of Service allow.
+   b. Report problems and suggest changes through this repository.
+
+2. What you may not do without written permission from the copyright holder
+
+   a. Build, run, install or otherwise use the software, or any part of it,
+      other than an official Grab release obtained from the copyright holder,
+      which is covered by its own terms.
+   b. Copy, modify, translate, adapt or create derivative works of the
+      software or any part of it.
+   c. Publish, distribute, sublicense, sell, rent or lend the software or any
+      part of it, or offer it as a service.
+   d. Use the Grab name, logo, icon, mascots, artwork or promotional material.
+
+3. Contributions
+
+   If you send a pull request, patch, issue or other contribution, you agree
+   that the copyright holder may use, modify, relicense and distribute it as
+   part of Grab or otherwise, under any terms, without payment, and you confirm
+   that you have the right to grant this.
+
+4. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+5. Permission
+
+   To ask for permission beyond this license, open an issue at
+   https://github.com/0x1p0/grab.
