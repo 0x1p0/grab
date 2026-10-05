@@ -278,20 +278,15 @@ swift test                         # unit tests
 
 ### Releasing
 
-```bash
-scripts/release.sh 1.2.0
-```
-
-builds, signs and packages `dist/Grab-1.2.0.dmg` (to download), `dist/Grab-1.2.0.zip` (what the updater installs) and `dist/grab.rb` (the Homebrew cask). Then publish it:
+Push a version tag, or run the **Release** workflow from the Actions tab with a version:
 
 ```bash
-gh release create v1.2.0 dist/Grab-1.2.0.dmg dist/Grab-1.2.0.zip
-scripts/publish-tap.sh 1.2.0    # updates the cask in 0x1p0/homebrew-tap
+git tag v1.4.0 && git push origin v1.4.0
 ```
 
- For other people's Macs it needs a **Developer ID Application** certificate (Apple Developer Program) and notarization: save your notary credentials once with `xcrun notarytool store-credentials grab-notary`, then run it with `NOTARY_PROFILE=grab-notary`. Without a Developer ID it signs with your Apple Development certificate and says that build only opens on your own Macs.
+[`release.yml`](.github/workflows/release.yml) runs the tests, builds Grab, signs it with the Grab Release key, and publishes `Grab-x.y.z.dmg` (to download) and `Grab-x.y.z.zip` (what Grab's updater installs). Every release is signed with that same key, and Grab only installs updates that carry it. The key lives in the repository's secrets; to make a release on your own Mac instead, point `scripts/release.sh` at the key with `GRAB_RELEASE_P12` and `GRAB_RELEASE_P12_PASSWORD` (see the top of the script).
 
-On GitHub, every push to `main` builds and runs the tests ([`ci.yml`](.github/workflows/ci.yml)), and pushing a tag like `v1.2.0` builds, signs, notarizes and publishes the release and the cask ([`release.yml`](.github/workflows/release.yml)) once the secrets listed at the top of that file are set. Until then it leaves tags alone.
+Releases aren't notarized yet (that needs a paid Developer ID), so the first time a downloaded copy opens, macOS asks you to allow it.
 
 ## How it's built
 

@@ -175,7 +175,12 @@ final class Updater {
         }.value
     }
 
-    /// The new app must be Grab, the version we expect, and signed by whoever signed this copy.
+    /// The certificate official releases are signed with (SHA-1 of the "Grab Release" certificate).
+    nonisolated static let releaseCertificate = "3f7a72209f972742d7f85825176396efc194da89"
+
+    /// The new app must be Grab, the version we expect, and signed either by whoever signed this
+    /// copy or with Grab's release certificate (so a copy you built yourself can still update to
+    /// an official release).
     nonisolated static func verify(_ app: URL, version: String) throws {
         guard let bundle = Bundle(url: app), bundle.bundleIdentifier == Bundle.main.bundleIdentifier else {
             throw UpdateError("The download isn't Grab")
@@ -194,18 +199,28 @@ final class Updater {
         // An ad-hoc signature names one exact build; no other build can match it.
         var info: CFDictionary?
         if SecCodeCopySigningInformation(staticMe, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
-           (info as? [String: Any])?[kSecCodeInfoTeamIdentifier as String] == nil {
+           let flags = (info as? [String: Any])?[kSecCodeInfoFlags as String] as? UInt32,
+           flags & UInt32(SecCodeSignatureFlags.adhoc.rawValue) != 0 {
             throw UpdateError("This copy of Grab was built locally, so it can't verify downloads. Download the update from the release page.")
         }
+        try checkSignature(of: app, against: [requirement] + (releaseRequirement().map { [$0] } ?? []))
+    }
+
+    /// Passes if the app is validly signed and meets any one of the requirements.
+    nonisolated static func checkSignature(of app: URL, against requirements: [SecRequirement]) throws {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(app as CFURL, [], &code) == errSecSuccess, let code else {
             throw UpdateError("The download isn't signed")
         }
-        var error: Unmanaged<CFError>?
         let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate | kSecCSCheckNestedCode)
-        guard SecStaticCodeCheckValidityWithErrors(code, flags, requirement, &error) == errSecSuccess else {
-            throw UpdateError("The download isn't signed by Grab's developer, so it wasn't installed")
-        }
+        for r in requirements where SecStaticCodeCheckValidityWithErrors(code, flags, r, nil) == errSecSuccess { return }
+        throw UpdateError("The download isn't signed by Grab's developer, so it wasn't installed")
+    }
+
+    nonisolated static func releaseRequirement() -> SecRequirement? {
+        var r: SecRequirement?
+        let text = "identifier \"com.thirteen.Grab\" and certificate root = H\"\(releaseCertificate)\"" as CFString
+        return SecRequirementCreateWithString(text, [], &r) == errSecSuccess ? r : nil
     }
 
     private func relaunch(_ app: URL) {

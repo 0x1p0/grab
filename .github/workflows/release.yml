@@ -1,50 +1,54 @@
 name: Release
 
-# Push a tag like v1.2.0 to build, sign, notarize and publish a release.
+# Builds, tests, signs and publishes a release of Grab.
 #
-# Needs these repository secrets (Settings → Secrets and variables → Actions):
-#   DEVELOPER_ID_P12           your "Developer ID Application" certificate + key, exported as .p12, base64-encoded
-#   DEVELOPER_ID_P12_PASSWORD  the password you gave the .p12
-#   NOTARY_KEY_P8              an App Store Connect API key (.p8), base64-encoded
-#   NOTARY_KEY_ID              that key's ID
-#   NOTARY_ISSUER              your App Store Connect issuer ID
+#   • Push a tag:        git tag v1.4.0 && git push origin v1.4.0
+#   • Or from GitHub:    Actions → Release → Run workflow → version 1.4.0
+#
+# The release gets Grab-x.y.z.dmg (to download) and Grab-x.y.z.zip (what Grab's built-in
+# updater installs). Both are signed with the "Grab Release" key, which every copy of Grab
+# trusts for updates.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   GRAB_RELEASE_P12           the Grab Release key (.p12), base64-encoded
+#   GRAB_RELEASE_P12_PASSWORD  its password
 #   TAP_TOKEN                  (optional) a token that can push to 0x1p0/homebrew-tap, to update the cask
-#
-# Without the signing secrets the tag is left alone: publish from your Mac with
-# scripts/release.sh, `gh release create` and scripts/publish-tap.sh.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, like 1.4.0"
+        required: true
 
 permissions:
   contents: write
 
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    outputs:
-      signing: ${{ steps.secrets.outputs.signing }}
-    steps:
-      - id: secrets
-        env:
-          P12: ${{ secrets.DEVELOPER_ID_P12 }}
-        run: |
-          if [ -n "$P12" ]; then
-            echo "signing=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "signing=no" >> "$GITHUB_OUTPUT"
-            echo "::notice::No Developer ID secrets yet, so this tag isn't built here."
-          fi
+concurrency:
+  group: release
+  cancel-in-progress: false
 
+jobs:
   release:
-    needs: check
-    if: needs.check.outputs.signing == 'yes'
     runs-on: macos-26
     timeout-minutes: 60
     env:
       TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
     steps:
+      - name: Version
+        id: version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then V="${GITHUB_REF_NAME#v}"; else V="${INPUT#v}"; fi
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::'$V' isn't a version like 1.4.0"
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -52,43 +56,40 @@ jobs:
       - name: Use the newest Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
 
-      - name: Import the signing certificate
+      - name: Test
+        run: swift test
+
+      - name: Build and sign
         env:
-          P12: ${{ secrets.DEVELOPER_ID_P12 }}
-          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          P12: ${{ secrets.GRAB_RELEASE_P12 }}
+          GRAB_RELEASE_P12_PASSWORD: ${{ secrets.GRAB_RELEASE_P12_PASSWORD }}
         run: |
-          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
-          PASS=$(uuidgen)
-          security create-keychain -p "$PASS" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$PASS" "$KEYCHAIN"
-          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$PASS" "$KEYCHAIN" >/dev/null
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-          rm "$RUNNER_TEMP/cert.p12"
+          if [ -z "$P12" ]; then
+            echo "::error::The GRAB_RELEASE_P12 secret isn't set, so the release can't be signed."
+            exit 1
+          fi
+          export GRAB_RELEASE_P12="$RUNNER_TEMP/grab-release.p12"
+          echo "$P12" | base64 --decode > "$GRAB_RELEASE_P12"
+          scripts/release.sh "${{ steps.version.outputs.version }}"
+          rm -f "$GRAB_RELEASE_P12"
 
-      - name: Notary key
-        env:
-          KEY: ${{ secrets.NOTARY_KEY_P8 }}
-        run: echo "$KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+      - name: Check the signature
+        run: |
+          APP=build/Grab.app
+          codesign --verify --strict --deep "$APP"
+          codesign --verify -R='identifier "com.thirteen.Grab" and certificate root = H"3f7a72209f972742d7f85825176396efc194da89"' "$APP"
+          test "$(defaults read "$PWD/$APP/Contents/Info" CFBundleShortVersionString)" = "${{ steps.version.outputs.version }}"
 
-      - name: Build, sign and notarize
-        env:
-          NOTARY_KEY: ${{ runner.temp }}/notary.p8
-          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
-        run: scripts/release.sh "${GITHUB_REF_NAME#v}"
-
-      - name: Publish the release
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/Grab-*.dmg dist/Grab-*.zip \
-            --title "Grab ${GITHUB_REF_NAME#v}" --generate-notes
+          gh release create "v$V" "dist/Grab-$V.dmg" "dist/Grab-$V.zip" \
+            --target "$GITHUB_SHA" --title "Grab $V" --generate-notes
 
       - name: Update the Homebrew tap
         if: env.TAP_TOKEN != ''
         env:
           GH_TOKEN: ${{ env.TAP_TOKEN }}
-        run: scripts/publish-tap.sh "${GITHUB_REF_NAME#v}"
+        run: scripts/publish-tap.sh "${{ steps.version.outputs.version }}"

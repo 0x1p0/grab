@@ -8,9 +8,13 @@
 #   Grab-1.2.0.zip   what Grab's built-in updater installs (attach both to the GitHub release)
 #   grab.rb          a Homebrew cask for that release
 #
-# Signing uses your "Developer ID Application" certificate (it comes with the paid Apple
-# Developer Program). Without one it falls back to "Apple Development": fine for your
-# own Macs, but macOS will refuse to open that build anywhere else.
+# Signing, in order of preference:
+#   GRAB_RELEASE_P12 / GRAB_RELEASE_P12_PASSWORD
+#       the "Grab Release" key (a .p12 file and its password). Every official release is
+#       signed with it, so Grab's updater accepts each new one. It's loaded into a
+#       throwaway keychain that's deleted afterwards. The release workflow sets these.
+#   your "Developer ID Application" certificate (paid Apple Developer Program), notarized
+#   your "Apple Development" certificate: opens only on your own Macs
 #
 # Notarizing (Developer ID only) needs either
 #   NOTARY_PROFILE=grab-notary  a profile you save once with
@@ -35,25 +39,47 @@ echo "▸ Grab $VERSION (build $BUILD_NUMBER)"
 scripts/build.sh
 APP=build/Grab.app
 
-IDS=$(security find-identity -v -p codesigning 2>/dev/null || true)
-IDENTITY=$(awk -F'"' '/Developer ID Application/ {print $2; exit}' <<<"$IDS")
-PUBLIC=1
-if [ -z "$IDENTITY" ]; then
-  PUBLIC=0
-  IDENTITY=$(awk -F'"' '/Apple Development/ {print $2; exit}' <<<"$IDS")
+SIGN=()          # extra codesign arguments
+STAMP=--timestamp=none
+PUBLIC=0
+RELEASE_KEY=0
+if [ -n "${GRAB_RELEASE_P12:-}" ]; then
+  # A keychain of its own, never added to your keychain list, deleted on exit.
+  KC_DIR=$(mktemp -d)
+  KC="$KC_DIR/grab-release.keychain-db"
+  KC_PASS=$(uuidgen)
+  trap 'security delete-keychain "$KC" 2>/dev/null; rm -rf "$KC_DIR"' EXIT
+  security create-keychain -p "$KC_PASS" "$KC"
+  security set-keychain-settings -lut 3600 "$KC"
+  security unlock-keychain -p "$KC_PASS" "$KC"
+  security import "$GRAB_RELEASE_P12" -k "$KC" -P "${GRAB_RELEASE_P12_PASSWORD:-}" -T /usr/bin/codesign >/dev/null
+  security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+  IDENTITY=$(security find-identity -p codesigning "$KC" | awk '/"Grab Release"/ {print $2; exit}')
+  if [ -z "$IDENTITY" ]; then
+    echo "✗ GRAB_RELEASE_P12 doesn't hold the Grab Release certificate" >&2
+    exit 1
+  fi
+  SIGN=(--keychain "$KC")
+  RELEASE_KEY=1
+  echo "▸ Signing with the Grab Release key"
+else
+  IDS=$(security find-identity -v -p codesigning 2>/dev/null || true)
+  IDENTITY=$(awk -F'"' '/Developer ID Application/ {print $2; exit}' <<<"$IDS")
+  if [ -n "$IDENTITY" ]; then
+    PUBLIC=1
+    STAMP=--timestamp
+    echo "▸ Signing with your Developer ID"
+  else
+    IDENTITY=$(awk -F'"' '/Apple Development/ {print $2; exit}' <<<"$IDS")
+    echo "▸ Signing with your Apple Development certificate (no release key or Developer ID)"
+  fi
 fi
 if [ -z "$IDENTITY" ]; then
-  echo "✗ No code signing certificate in your keychain" >&2
+  echo "✗ No code signing certificate" >&2
   exit 1
 fi
 
-if [ "$PUBLIC" = 1 ]; then
-  echo "▸ Signing with your Developer ID"
-  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
-else
-  echo "▸ Signing with your Apple Development certificate (no Developer ID found)"
-  codesign --force --options runtime --timestamp=none --sign "$IDENTITY" "$APP"
-fi
+codesign --force --options runtime "$STAMP" ${SIGN[@]+"${SIGN[@]}"} --sign "$IDENTITY" "$APP"
 codesign --verify --strict "$APP"
 
 CAN_NOTARIZE=0
@@ -93,11 +119,7 @@ else
   hdiutil create -volname "Grab $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 fi
 rm -rf "$STAGE"
-if [ "$PUBLIC" = 1 ]; then
-  codesign --force --timestamp --sign "$IDENTITY" "$DMG"
-else
-  codesign --force --timestamp=none --sign "$IDENTITY" "$DMG"
-fi
+codesign --force "$STAMP" ${SIGN[@]+"${SIGN[@]}"} --sign "$IDENTITY" "$DMG"
 if [ "$CAN_NOTARIZE" = 1 ]; then
   echo "▸ Notarizing the disk image"
   notarize "$DMG"
@@ -134,6 +156,9 @@ if [ "$CAN_NOTARIZE" = 1 ]; then
   echo "✓ Ready: attach $DMG and $ZIP to a GitHub release tagged v$VERSION"
 elif [ "$PUBLIC" = 1 ]; then
   echo "! Signed with Developer ID but not notarized: set NOTARY_PROFILE (see the top of this script)."
+elif [ "$RELEASE_KEY" = 1 ]; then
+  echo "✓ Ready: signed with the Grab Release key. It isn't notarized, so the first time a"
+  echo "  downloaded copy opens, macOS asks to allow it (Privacy & Security → Open Anyway)."
 else
   echo "! This build opens only on your own Macs. For everyone else you need a Developer ID"
   echo "  certificate (Apple Developer Program), then run this again with NOTARY_PROFILE set."
