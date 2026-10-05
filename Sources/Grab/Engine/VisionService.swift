@@ -14,9 +14,18 @@ actor VisionService {
     private var input: FileHandle?
     private var nextID: UInt64 = 1
     private var pending: [UInt64: CheckedContinuation<(VisionReply, Data), Error>] = [:]
+    private var sentAt: [UInt64: Date] = [:]
     private var failures = 0
 
-    enum Failure: Error { case unavailable, worker(String) }
+    enum Failure: Error { case unavailable, worker(String), busy }
+
+    /// When the helper has stopped answering for a while (it's still getting its models
+    /// ready), new work isn't stacked on top of it: it comes back empty at once instead.
+    static let stalledAfter: TimeInterval = 5
+
+    /// Set while a new build of Grab prepares its text models (see `warmUpIfNewBuild`),
+    /// so the HUD can say why text isn't ready yet.
+    @MainActor static var preparing = false
 
     // MARK: API
 
@@ -31,20 +40,60 @@ actor VisionService {
         var req = VisionRequest(op: .read, rect: cap.rect)
         req.correction = correction
         req.barcodes = barcodes
-        if let (r, _) = try? await call(req, image: cap.image), let l = r.layout { return l }
+        do {
+            let (r, _) = try await call(req, image: cap.image)
+            if let l = r.layout { return l }
+        } catch Failure.busy {
+            return TextLayout()
+        } catch {}
         return await TextReader.read(cap, correction: correction, barcodes: barcodes)
     }
 
     func barcodes(_ cap: Capture) async -> [Barcode] {
-        if let (r, _) = try? await call(VisionRequest(op: .barcodes, rect: cap.rect), image: cap.image), let c = r.codes { return c }
+        do {
+            let (r, _) = try await call(VisionRequest(op: .barcodes, rect: cap.rect), image: cap.image)
+            if let c = r.codes { return c }
+        } catch Failure.busy {
+            return []
+        } catch {}
         return BarcodeScanner.detect(in: cap)
     }
 
     func recognize(_ cap: Capture, accurate: Bool) async -> [OCRLine] {
         var req = VisionRequest(op: .recognize, rect: cap.rect)
         req.accurate = accurate
-        if let (r, _) = try? await call(req, image: cap.image), let l = r.lines { return l }
+        do {
+            let (r, _) = try await call(req, image: cap.image)
+            if let l = r.lines { return l }
+        } catch Failure.busy {
+            return []
+        } catch {}
         return VisionEngine.recognize(cap, accurate: accurate, correction: false)
+    }
+
+    /// The first time a new build of Grab reads text (after an update or a reinstall),
+    /// macOS prepares the recognition models for it, which can take a minute. Do that
+    /// right after launch, in the background, instead of when you first hold ⌥.
+    func warmUpIfNewBuild() async {
+        guard let key = Self.buildKey(), UserDefaults.standard.string(forKey: "visionWarmBuild") != key else { return }
+        await MainActor.run { Self.preparing = true }
+        defer { Task { @MainActor in Self.preparing = false } }
+        guard (try? ensureRunning()) != nil else { return }
+        if (try? await send(VisionRequest(op: .warm), image: nil)) != nil {
+            UserDefaults.standard.set(key, forKey: "visionWarmBuild")
+        }
+    }
+
+    /// This build's code signature hash: it changes with every build and update.
+    nonisolated static func buildKey() -> String? {
+        var me: SecCode?
+        var info: CFDictionary?
+        guard SecCodeCopySelf([], &me) == errSecSuccess, let me else { return nil }
+        var staticMe: SecStaticCode?
+        guard SecCodeCopyStaticCode(me, [], &staticMe) == errSecSuccess, let staticMe,
+              SecCodeCopySigningInformation(staticMe, [], &info) == errSecSuccess,
+              let hash = (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data else { return nil }
+        return hash.map { String(format: "%02x", $0) }.joined()
     }
 
     func subject(of image: CGImage) async -> CGImage? {
@@ -65,6 +114,8 @@ actor VisionService {
                 return try await send(request, image: image)
             } catch Failure.worker(let why) {
                 throw Failure.worker(why)
+            } catch Failure.busy {
+                throw Failure.busy
             } catch {
                 // The helper exited (idle timeout racing a new request): one fresh try.
                 if attempt == 1 { failures += 1; throw error }
@@ -74,6 +125,11 @@ actor VisionService {
     }
 
     private func send(_ request: VisionRequest, image: CGImage?) async throws -> (VisionReply, Data) {
+        // A helper still preparing its models answers nothing for a while: don't pile on.
+        if request.op != .warm, request.op != .subject, let oldest = sentAt.values.min(),
+           Date().timeIntervalSince(oldest) > Self.stalledAfter {
+            throw Failure.busy
+        }
         let handle = try ensureRunning()
         var req = request
         req.id = nextID
@@ -91,10 +147,12 @@ actor VisionService {
         let frame = try Frame.encode(req, payload: payload)
         return try await withCheckedThrowingContinuation { c in
             pending[req.id] = c
+            sentAt[req.id] = Date()
             do {
                 try handle.write(contentsOf: frame)
             } catch {
                 pending[req.id] = nil
+                sentAt[req.id] = nil
                 c.resume(throwing: error)
             }
         }
@@ -134,6 +192,7 @@ actor VisionService {
     }
 
     private func deliver(_ reply: VisionReply, _ data: Data) {
+        sentAt[reply.id] = nil
         guard let c = pending.removeValue(forKey: reply.id) else { return }
         if let error = reply.error { c.resume(throwing: Failure.worker(error)) } else { c.resume(returning: (reply, data)) }
     }
@@ -144,6 +203,7 @@ actor VisionService {
         input = nil
         let waiting = pending
         pending.removeAll()
+        sentAt.removeAll()
         for c in waiting.values { c.resume(throwing: Failure.unavailable) }
     }
 }

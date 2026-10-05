@@ -38,6 +38,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applySettings()
         // Badges already reached by grabs made before they existed.
         Badges.shared.catchUp()
+        // A new build reads text slowly the very first time: get that over with now.
+        if Permissions.shared.screenRecording {
+            Task.detached(priority: .utility) {
+                try? await Task.sleep(for: .seconds(2))
+                await VisionService.shared.warmUpIfNewBuild()
+            }
+        }
         NotificationCenter.default.addObserver(forName: .grabSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applySettings() }
         }

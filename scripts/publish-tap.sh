@@ -37,6 +37,8 @@ trap 'rm -rf "$WORK"' EXIT
 echo "▸ Downloading $DMG from the $TAG release"
 gh release download "$TAG" --repo "$REPO" --pattern "$DMG" --dir "$WORK"
 SHA=$(shasum -a 256 "$WORK/$DMG" | awk '{print $1}')
+NOTARIZED=0
+if xcrun stapler validate "$WORK/$DMG" >/dev/null 2>&1; then NOTARIZED=1; fi
 VISIBILITY=$(gh repo view "$REPO" --json visibility --jq .visibility)
 
 # Commit as whoever commits to the grab repo.
@@ -100,11 +102,11 @@ cat >> "$CASK" <<'END'
   ]
 END
 
-if [ "$VISIBILITY" != "PUBLIC" ]; then
-  # Private builds are signed with the developer's own Apple Development certificate,
-  # which can't be notarized. Clear the "downloaded" mark so Grab opens like a copy
-  # built on this Mac instead of being stopped by Gatekeeper. Public releases are
-  # notarized and keep the mark.
+if [ "$NOTARIZED" = 0 ]; then
+  # Releases aren't notarized yet (that needs a paid Developer ID), so macOS would stop
+  # the first launch with "Apple could not verify Grab". Installing through this tap is
+  # the choice to trust it: clear the "downloaded" mark so Grab simply opens. Once
+  # releases are notarized, they keep the mark and Gatekeeper checks them as usual.
   cat >> "$CASK" <<'END'
 
   postflight_steps do

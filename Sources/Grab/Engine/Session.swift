@@ -1326,7 +1326,9 @@ final class Session {
                 return .text(clean.oneLine.truncated(160), meta: meta)
             }
             if s.textPending { return .loading("Reading text…") }
-            if !s.analysisDone && Permissions.shared.screenRecording { return .loading("Looking for text…") }
+            if !s.analysisDone && Permissions.shared.screenRecording {
+                return .loading(VisionService.preparing ? "Getting text recognition ready after the update…" : "Looking for text…")
+            }
             return .unavailable("No text here")
         case .link:
             guard let u = linkURL(for: s) else { return .unavailable("No link") }

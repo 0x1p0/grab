@@ -114,15 +114,26 @@ if [ "$CAN_NOTARIZE" = 1 ]; then
 fi
 
 echo "▸ Making the disk image"
-STAGE=$(mktemp -d)
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-if diskutil image create from --help >/dev/null 2>&1; then
-  diskutil image create from --format UDZO --volumeName "Grab $VERSION" "$STAGE" "$DMG" >/dev/null
-else
-  hdiutil create -volname "Grab $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+# The window people see: Grab, an arrow, Applications. dmgbuild writes Finder's layout
+# directly (no Finder scripting), so this works the same here and on CI. It lives in a
+# virtual environment inside .build.
+DMGBUILD="${DMGBUILD:-.build/dmgbuild-venv/bin/dmgbuild}"
+if [ ! -x "$DMGBUILD" ]; then
+  python3 -m venv .build/dmgbuild-venv
+  .build/dmgbuild-venv/bin/pip install --quiet --disable-pip-version-check "dmgbuild>=1.6,<2"
+  DMGBUILD=.build/dmgbuild-venv/bin/dmgbuild
 fi
-rm -rf "$STAGE"
+BG_DIR=$(mktemp -d)
+tiffutil -cathidpicheck packaging/dmg-background.png packaging/dmg-background@2x.png -out "$BG_DIR/background.tiff" >/dev/null
+"$DMGBUILD" -s packaging/dmg_settings.py -D app="$APP" -D background="$BG_DIR/background.tiff" \
+  -D icon=Resources/AppIcon.icns "Grab $VERSION" "$DMG" >/dev/null
+rm -rf "$BG_DIR"
+# The app inside must still be exactly what was signed.
+MNT=$(mktemp -d)
+hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG" >/dev/null 2>&1
+codesign --verify --strict --deep "$MNT/Grab.app"
+hdiutil detach "$MNT" >/dev/null 2>&1
+rmdir "$MNT"
 codesign --force "$STAMP" ${SIGN[@]+"${SIGN[@]}"} --sign "$IDENTITY" "$DMG"
 if [ "$CAN_NOTARIZE" = 1 ]; then
   echo "▸ Notarizing the disk image"
