@@ -48,33 +48,6 @@ enum FunFormats {
         return ctx.makeImage()
     }
 
-    // MARK: Instant photo
-
-    /// The picture as an instant photo: film tones, a wide white bottom edge with a
-    /// handwritten caption, tilted a touch.
-    @MainActor
-    static func polaroid(_ image: CGImage, pointSize: CGSize, caption: String) -> (image: CGImage, pointSize: CGSize)? {
-        let toned = filmTone(image) ?? image
-        // A sensible print size, whatever the source.
-        let longest = max(pointSize.width, pointSize.height)
-        let k = longest > 0 ? min(1, 460 / longest) : 1
-        var photo = CGSize(width: max(1, pointSize.width * k), height: max(1, pointSize.height * k))
-        if min(photo.width, photo.height) < 160 {
-            let up = 160 / max(1, min(photo.width, photo.height))
-            photo = CGSize(width: photo.width * up, height: photo.height * up)
-        }
-        let r = ImageRenderer(content: PolaroidView(photo: toned, size: photo, caption: caption))
-        r.scale = 2
-        guard let out = r.cgImage else { return nil }
-        return (out, CGSize(width: CGFloat(out.width) / 2, height: CGFloat(out.height) / 2))
-    }
-
-    /// Instant-film color, if Core Image has it.
-    static func filmTone(_ image: CGImage) -> CGImage? {
-        let ci = CIImage(cgImage: image).applyingFilter("CIPhotoEffectInstant", parameters: [:])
-        return CIContext().createCGImage(ci, from: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-    }
-
     // MARK: Receipt
 
     /// A list, or any text, printed as a till receipt.
@@ -116,40 +89,6 @@ enum FunFormats {
         }
         while out.last?.isEmpty == true { out.removeLast() }
         return out
-    }
-}
-
-private struct PolaroidView: View {
-    let photo: CGImage
-    let size: CGSize
-    let caption: String
-
-    var body: some View {
-        let side = max(12, min(size.width, size.height) * 0.06)
-        let bottom = max(side * 3.6, 52)
-        VStack(spacing: 0) {
-            Image(decorative: photo, scale: 1)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: size.width, height: size.height)
-                .clipped()
-                .overlay(Rectangle().strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5))
-            Text(caption)
-                .font(.custom("Noteworthy-Bold", size: min(22, max(13, size.width * 0.05))))
-                .foregroundStyle(Color(red: 0.16, green: 0.18, blue: 0.32))
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .frame(width: size.width, height: bottom)
-        }
-        .padding(.horizontal, side)
-        .padding(.top, side)
-        .background(
-            LinearGradient(colors: [Color(red: 0.99, green: 0.985, blue: 0.97), Color(red: 0.955, green: 0.95, blue: 0.93)],
-                           startPoint: .top, endPoint: .bottom)
-        )
-        .shadow(color: .black.opacity(0.22), radius: 8, y: 4)
-        .rotationEffect(.degrees(-2))
-        .padding(26)
     }
 }
 

@@ -256,7 +256,8 @@ final class Inspector {
                    let block = (chain[wi].element.parameterized(AXAttr.stringForMarkerRange, r) as? String)?.cleanedForClipboard,
                    block.count > fragment.count, block.contains(fragment), block.count < 20_000 {
                     let isWebKit = (app?.bundleIdentifier ?? "").hasPrefix("com.apple.Safari") || (app?.bundleIdentifier ?? "").hasPrefix("com.apple.WebKit")
-                    scopes[pi].text = isWebKit ? block : spacedBlockText(host: chain[wi].element, element: chain[j].element, raw: block)
+                    let text = isWebKit ? block : spacedBlockText(host: chain[wi].element, element: chain[j].element, raw: block)
+                    scopes[pi].text = fullerText(text, block: chain[j].element)
                     scopes[pi].frame = f.intersection(clip(from: j))
                 }
                 break
@@ -282,9 +283,17 @@ final class Inspector {
         var paragraphDepth: Int?
         if webIndex != nil, codeRegion == nil, scopes.isEmpty, chain[0].role == "AXStaticText" {
             paragraphDepth = (1..<min(3, chain.count)).first { j in
-                ["AXGroup", "AXHeading", "AXListItem", "AXCell"].contains(chain[j].role)
+                ["AXGroup", "AXHeading", "AXListItem", "AXCell", "AXParagraph", "AXBlockquote"].contains(chain[j].role)
                     && (chain[j].frame?.height ?? .infinity) <= 480
             }
+        }
+        // A text run that's only part of its paragraph (the text before some inline code
+        // or a bold word) isn't worth offering on its own: copying it cuts the sentence off.
+        var partialRun = false
+        if webIndex != nil, chain.count > 1, chain[0].role == "AXStaticText", Self.textBlockRoles.contains(chain[1].role),
+           (chain[1].frame?.height ?? .infinity) <= 600,
+           ((chain[1].element.attribute(AXAttr.children) as? [AXUIElement])?.count ?? 0) > 1 {
+            partialRun = true
         }
 
         let isFinder = app?.bundleIdentifier == "com.apple.finder"
@@ -298,6 +307,7 @@ final class Inspector {
         let pageURL = webIndex.flatMap { chain[$0].url }
         let videoPage = pageURL.flatMap(Self.timestampablePage)
         for (i, n) in chain.enumerated() {
+            if i == 0, partialRun { continue }
             guard var f = n.frame, f.isUsable else { continue }
             f = f.intersection(clip(from: i))
             guard f.isUsable else { continue }
@@ -541,6 +551,10 @@ final class Inspector {
                 if let r = result, !r.contains("\n"), s.frame.height > 40, let laidOut = collectText(under: e), laidOut.contains("\n") {
                     result = laidOut
                 }
+                // …and stops a paragraph's text at its first inline element.
+                if let r = result, Self.textBlockRoles.contains(s.role ?? ""), s.frame.height <= 600 {
+                    result = fullerText(r, block: e)
+                }
             }
             if result == nil, ["AXTextArea", "AXTextField", "AXStaticText", "AXComboBox"].contains(s.role ?? "") {
                 result = (e.attribute(AXAttr.value) as? String)?.cleanedForClipboard.nonBlank
@@ -551,6 +565,40 @@ final class Inspector {
         }
         textCache[key] = result ?? ""
         return result
+    }
+
+    /// A paragraph's text exactly as written, from its text runs in order. Chromium's text
+    /// markers stop at the first inline element (code, bold, a link), and laying the runs
+    /// out by position adds spaces that aren't there ("( excludetest )"). Nil when the
+    /// block holds other blocks (lists, tables), whose line breaks this would lose.
+    func inlineText(of root: AXUIElement) -> String? {
+        var out = ""
+        var stack: [AXUIElement] = [root]
+        var visited = 0
+        let names = [AXAttr.role, AXAttr.value, AXAttr.children]
+        let blocks: Set<String> = ["AXList", "AXListItem", "AXTable", "AXOutline", "AXHeading", "AXTextArea", "AXBlockquote", "AXParagraph"]
+        while let e = stack.popLast() {
+            visited += 1
+            guard visited < 400 else { return nil }
+            let v = e.attributes(names)
+            let role = v[AXAttr.role] as? String ?? ""
+            if visited > 1, blocks.contains(role) { return nil }
+            if Self.silentRoles.contains(role) { continue }
+            if role == "AXStaticText" {
+                out += v[AXAttr.value] as? String ?? ""
+                continue
+            }
+            stack.append(contentsOf: (v[AXAttr.children] as? [AXUIElement] ?? []).reversed())
+        }
+        return out.cleanedForClipboard.nonBlank
+    }
+
+    /// Prefers the paragraph rebuilt from its runs when the engine's own text for it
+    /// stopped short (same text so far, just cut off).
+    private func fullerText(_ text: String, block: AXUIElement) -> String {
+        guard let inline = inlineText(of: block) else { return text }
+        let a = text.filter { !$0.isWhitespace }, b = inline.filter { !$0.isWhitespace }
+        return b.count > a.count && b.contains(a) ? inline : text
     }
 
     /// Walks the subtree gathering visible text in reading order, within a time budget.

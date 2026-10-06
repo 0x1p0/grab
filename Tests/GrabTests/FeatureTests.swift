@@ -586,8 +586,28 @@ final class FunFormatTests: XCTestCase {
         XCTAssertGreaterThan(r.pointSize.height, r.pointSize.width)
         let img = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
-        let p = try XCTUnwrap(FunFormats.polaroid(img, pointSize: CGSize(width: 200, height: 150), caption: "shop.example · Oct 4"))
-        XCTAssertGreaterThan(p.pointSize.height, 150 + 40, "the wide bottom edge")
+        for film in PolaroidStyle.Film.allCases {
+            var style = PolaroidStyle()
+            style.film = film
+            let p = try XCTUnwrap(Polaroid.make(img, pointSize: CGSize(width: 200, height: 150), caption: "shop.example · Oct 4", style: style), film.title)
+            XCTAssertGreaterThan(p.pointSize.height, 150 + 40, "the wide bottom edge")
+        }
+    }
+
+    func testPolaroidCaptions() {
+        let date = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 6, hour: 21, minute: 41))!
+        var style = PolaroidStyle()
+        let day = date.formatted(.dateTime.month(.abbreviated).day())
+        XCTAssertEqual(style.captionText(site: "youtube.com", app: "Safari", title: "A video", at: date), "youtube.com · \(day)")
+        style.caption = .place
+        XCTAssertEqual(style.captionText(site: "youtube.com", app: "Safari", title: nil, at: date), "youtube.com")
+        style.caption = .none
+        XCTAssertEqual(style.captionText(site: "youtube.com", app: "Safari", title: nil, at: date), "")
+        style.caption = .custom
+        style.custom = "{title} on {app}, {year}"
+        XCTAssertEqual(style.captionText(site: "youtube.com", app: "Safari", title: "A video", at: date), "A video on Safari, 2026")
+        style.custom = "seen at {site}"
+        XCTAssertEqual(style.captionText(site: "youtube.com", app: nil, title: nil, at: date), "seen at youtube.com")
     }
 }
 

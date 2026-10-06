@@ -1257,7 +1257,12 @@ final class Session {
             return .text(info.family == .list ? "Every item rung up on a till receipt, prices made up" : "Printed out as a till receipt", meta: "Receipt")
         }
         if mode == .image, f == "sticker" { return .text("The subject cut out with a white border, like a sticker", meta: "Sticker") }
-        if mode == .image, f == "polaroid" { return .text("An instant photo, with where and when written underneath", meta: "Polaroid") }
+        if mode == .image, f == "polaroid" {
+            let style = PolaroidStyle.current
+            let caption = style.captionText(site: storeName, app: inspection?.appName, title: inspection?.sourceTitle)
+            return .text(caption.isEmpty ? "An instant photo on \(style.film.title) film" : "An instant photo on \(style.film.title) film: “\(caption)”",
+                         meta: "Polaroid · change the look in Settings → Formats")
+        }
         if mode == .text, let v = s.smart, !["plain", "code", "markdown", "reference", "permalink"].contains(f),
            let out = SmartTypes.render(v, as: f) {
             let meta = "\(v.kind.title) · \(opt.title)"
@@ -1579,8 +1584,9 @@ final class Session {
                 }
                 return .success(.image(sticker, pointSize: CGSize(width: CGFloat(sticker.width) / scale, height: CGFloat(sticker.height) / scale)))
             case "polaroid":
-                let caption = storeName + " · " + Date().formatted(.dateTime.month(.abbreviated).day())
-                guard let photo = FunFormats.polaroid(img, pointSize: size, caption: caption) else { return failed("Couldn't make the photo") }
+                let style = PolaroidStyle.current
+                let caption = style.captionText(site: storeName, app: inspection?.appName, title: inspection?.sourceTitle)
+                guard let photo = Polaroid.make(img, pointSize: size, caption: caption, style: style) else { return failed("Couldn't make the photo") }
                 return .success(.image(photo.image, pointSize: photo.pointSize))
             case "palette":
                 let colors = await Task.detached(priority: .userInitiated, operation: { ImageTools.palette(of: img) }).value

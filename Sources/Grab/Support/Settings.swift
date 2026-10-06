@@ -143,6 +143,14 @@ final class Settings {
     var mascot: String { didSet { save("mascot", mascot) } }
     /// Mascots dress up for Halloween and the holidays.
     var seasonal: Bool { didSet { save("seasonal", seasonal) } }
+    /// How Polaroid copies look (see `PolaroidStyle`).
+    var polaroidFilm: String { didSet { save("polaroidFilm", polaroidFilm) } }
+    var polaroidFrame: String { didSet { save("polaroidFrame", polaroidFrame) } }
+    var polaroidHand: String { didSet { save("polaroidHand", polaroidHand) } }
+    var polaroidCaption: String { didSet { save("polaroidCaption", polaroidCaption) } }
+    var polaroidCustom: String { didSet { save("polaroidCustom", polaroidCustom) } }
+    var polaroidTilt: Bool { didSet { save("polaroidTilt", polaroidTilt) } }
+    var polaroidGrain: Bool { didSet { save("polaroidGrain", polaroidGrain) } }
     /// Grab's own look: follow the system, or always light or dark.
     var appearance: AppAppearance { didSet { save("appearance", appearance.rawValue) } }
     /// On Macs with a notch, grabs are carried into it instead of to the menu bar icon.
@@ -191,6 +199,13 @@ final class Settings {
             "mascot": "snap",
             "seasonal": true,
             "appearance": AppAppearance.system.rawValue,
+            "polaroidFilm": "instant",
+            "polaroidFrame": "white",
+            "polaroidHand": "marker",
+            "polaroidCaption": "whereAndDate",
+            "polaroidCustom": "{site} · {date}",
+            "polaroidTilt": true,
+            "polaroidGrain": true,
             "notchCatch": true,
             "mascotPeek": true,
             "wearOutfits": true,
@@ -226,6 +241,13 @@ final class Settings {
         mascot = d.string(forKey: "mascot") ?? "snap"
         seasonal = d.bool(forKey: "seasonal")
         appearance = AppAppearance(rawValue: d.string(forKey: "appearance") ?? "") ?? .system
+        polaroidFilm = d.string(forKey: "polaroidFilm") ?? "instant"
+        polaroidFrame = d.string(forKey: "polaroidFrame") ?? "white"
+        polaroidHand = d.string(forKey: "polaroidHand") ?? "marker"
+        polaroidCaption = d.string(forKey: "polaroidCaption") ?? "whereAndDate"
+        polaroidCustom = d.string(forKey: "polaroidCustom") ?? "{site} · {date}"
+        polaroidTilt = d.bool(forKey: "polaroidTilt")
+        polaroidGrain = d.bool(forKey: "polaroidGrain")
         notchCatch = d.bool(forKey: "notchCatch")
         mascotPeek = d.bool(forKey: "mascotPeek")
         wearOutfits = d.bool(forKey: "wearOutfits")

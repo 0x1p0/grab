@@ -452,6 +452,8 @@ private struct FormatsPane: View {
                     .onChange(of: spotlightFiles) { _, on in UserDefaults.standard.set(on, forKey: "spotlightFiles") }
             }
 
+            PolaroidCard()
+
             SettingsCard(title: "Colors") {
                 SettingRow(title: "Copy colors as") {
                     HStack(spacing: 10) {
@@ -474,6 +476,127 @@ private struct FormatsPane: View {
 
             CustomFormatsCard()
         }
+    }
+}
+
+/// The Polaroid format's look: film, frame, handwriting and caption, with a live print.
+private struct PolaroidCard: View {
+    @Bindable private var settings = Settings.shared
+    @State private var print: CGImage?
+    @State private var thumbs: [PolaroidStyle.Film: CGImage] = [:]
+
+    private var style: PolaroidStyle { PolaroidStyle.current }
+
+    var body: some View {
+        SettingsCard(title: "Polaroid", footer: "Press \(settings.trigger.chord("⇥")) on any picture and pick Polaroid. Every choice here shows up in the print right away.") {
+            HStack(alignment: .top, spacing: 18) {
+                Group {
+                    if let print {
+                        Image(decorative: print, scale: 2).resizable().aspectRatio(contentMode: .fit)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(width: 196, height: 230)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Film").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
+                        LazyVGrid(columns: Array(repeating: GridItem(.fixed(58), spacing: 8), count: 4), spacing: 8) {
+                            ForEach(PolaroidStyle.Film.allCases) { film in filmChip(film) }
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Frame").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            ForEach(PolaroidStyle.Frame.allCases) { frame in frameSwatch(frame) }
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Handwriting").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
+                        Picker("", selection: $settings.polaroidHand) {
+                            ForEach(PolaroidStyle.Hand.allCases) { h in Text(h.title).tag(h.rawValue) }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 262)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+            RowDivider()
+            SettingRow(title: "Written underneath") {
+                Picker("", selection: $settings.polaroidCaption) {
+                    ForEach(PolaroidStyle.Caption.allCases) { c in Text(c.title).tag(c.rawValue) }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            if settings.polaroidCaption == PolaroidStyle.Caption.custom.rawValue {
+                RowDivider()
+                SettingRow(title: "Your caption", detail: "Use {site}, {app}, {title}, {date}, {time} and {year}, or just write something.") {
+                    TextField("", text: $settings.polaroidCustom, prompt: Text("{site} · {date}"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 200)
+                }
+            }
+            RowDivider()
+            ToggleRow(title: "A slight tilt", detail: "Like a print dropped on a table.", isOn: $settings.polaroidTilt)
+            RowDivider()
+            ToggleRow(title: "Grain and vignette", detail: "Fine film grain and softly darker corners.", isOn: $settings.polaroidGrain)
+        }
+        .onAppear(perform: makeThumbs)
+        .onChange(of: style, initial: true) { _, s in render(s) }
+    }
+
+    private func render(_ s: PolaroidStyle) {
+        guard let sample = Polaroid.sample else { return }
+        let caption = s.captionText(site: "grab.app", app: "Safari", title: "Sunset")
+        print = Polaroid.make(sample, pointSize: CGSize(width: 300, height: 225), caption: caption, style: s)?.image
+    }
+
+    private func makeThumbs() {
+        guard thumbs.isEmpty, let sample = Polaroid.sample, let small = Thumbnail.make(sample, maxSide: 160) else { return }
+        for film in PolaroidStyle.Film.allCases {
+            thumbs[film] = Polaroid.develop(small, film: film, grain: false)
+        }
+    }
+
+    private func filmChip(_ film: PolaroidStyle.Film) -> some View {
+        let on = settings.polaroidFilm == film.rawValue
+        return Button {
+            settings.polaroidFilm = film.rawValue
+        } label: {
+            VStack(spacing: 4) {
+                Group {
+                    if let t = thumbs[film] { Image(decorative: t, scale: 2).resizable().aspectRatio(contentMode: .fill) } else { Color.secondary.opacity(0.2) }
+                }
+                .frame(width: 58, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(on ? Theme.accent : Color.primary.opacity(0.12), lineWidth: on ? 2 : 0.5))
+                Text(film.title).font(.system(size: 10.5, weight: on ? .semibold : .regular)).foregroundStyle(on ? .primary : .secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func frameSwatch(_ frame: PolaroidStyle.Frame) -> some View {
+        let on = settings.polaroidFrame == frame.rawValue
+        return Button {
+            settings.polaroidFrame = frame.rawValue
+        } label: {
+            Circle()
+                .fill(LinearGradient(colors: frame.paper, startPoint: .top, endPoint: .bottom))
+                .overlay(Circle().strokeBorder(Color.primary.opacity(0.18), lineWidth: 0.5))
+                .frame(width: 24, height: 24)
+                .padding(3)
+                .overlay(Circle().strokeBorder(on ? Theme.accent : .clear, lineWidth: 2))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(frame.title)
     }
 }
 
