@@ -365,6 +365,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 try? line.write(toFile: arg.isEmpty ? "/tmp/grab-sck.txt" : arg, atomically: true, encoding: .utf8)
             }
+        case "excludetest":
+            // A tiny red overlay window, visible to screen sharing: Grab's own capture of
+            // that spot must leave it out when it's excluded, and see it when it isn't.
+            let frame = NSRect(x: NSScreen.main?.frame.minX ?? 0, y: NSScreen.main?.frame.minY ?? 0, width: 8, height: 8)
+            let w = OverlayWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            w.level = .screenSaver
+            w.backgroundColor = .red
+            w.isOpaque = true
+            w.ignoresMouseEvents = true
+            w.sharingType = .readOnly
+            w.orderFrontRegardless()
+            let id = CGWindowID(w.windowNumber)
+            let rect = ScreenSpace.toAX(frame).insetBy(dx: 2, dy: 2)
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                func redAtCenter() async -> String {
+                    guard let cap = try? await ScreenGrabber.shared.capture(rect),
+                          let c = PixelReader.color(in: cap.image, x: cap.image.width / 2, y: cap.image.height / 2) else { return "capture failed" }
+                    return c.r > 0.8 && c.g < 0.3 && c.b < 0.3 ? "red" : "not red (\(c.hex))"
+                }
+                await ScreenGrabber.shared.setOverlayHidden(false)
+                await ScreenGrabber.shared.setExcludedWindows([])
+                let seen = await redAtCenter()
+                await ScreenGrabber.shared.setExcludedWindows([id])
+                let excluded = await redAtCenter()
+                w.orderOut(nil)
+                self.overlay.rebuild()
+                try? "preflight=\(CGPreflightScreenCaptureAccess()) control=\(seen) excluded=\(excluded)".write(toFile: arg, atomically: true, encoding: .utf8)
+            }
         case "params":
             let p = ScreenSpace.mouseLocation()
             DispatchQueue.global().async {

@@ -302,8 +302,9 @@ private struct FeelPane: View {
                 RowDivider()
                 ToggleRow(title: "Keyboard hints", detail: "Shows the keys you can press next to the border.", isOn: $settings.showHints)
                 RowDivider()
-                ToggleRow(title: "Show in screen recordings",
-                          detail: "Off keeps Grab's border out of every capture. Turn on to record a demo.", isOn: $settings.overlayInRecordings)
+                ToggleRow(title: "Show when sharing your screen",
+                          detail: "People watching a screen share or recording see the border, the HUD and the mascot. Grab's own captures leave them out either way.",
+                          isOn: $settings.overlayInRecordings)
             }
         }
     }

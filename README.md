@@ -209,7 +209,7 @@ Each has its own little sounds, the menu bar icon lights up the moment the grab 
 - **Nothing is kept on disk** unless you ask. History and the shelf live in memory; files made for dragging or Quick Look are temporary. *Keep history after quitting* (off by default) saves history encrypted with AES-GCM, with the key in your keychain, readable only by you, and never with secrets in it.
 - **On-device.** OCR, barcode detection, translation and AI (Apple Intelligence) run on your Mac. See below for the only times Grab goes online.
 - **Stats are counts.** Stats, badges and Grab Wrapped keep numbers, which apps you grab in and the colors you pick, on this Mac. Never what you grab.
-- **Never in your captures.** The overlay is hidden from screenshots and screen recordings by default.
+- **Never in its own captures.** Grab's border, HUD and mascot never end up in what Grab copies, OCRs or color-picks. They do show when you share or record your screen, so people can follow along (Settings → Feel can hide them).
 
 ### Permissions, explained
 

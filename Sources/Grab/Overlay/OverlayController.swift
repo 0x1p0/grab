@@ -61,9 +61,10 @@ final class OverlayController {
         if shown { windows.forEach { $0.orderFrontRegardless() } }
     }
 
-    /// By default the overlay is invisible to screen capture, so it never ends up
-    /// in your screenshots, recordings, OCR or colour picks. Recording a demo?
-    /// Settings can make it visible.
+    /// By default the overlay shows in screen sharing and recordings, like everything else
+    /// on screen. Grab's own captures (OCR, colour picks, images) leave its windows out
+    /// either way: with a content filter when the overlay is visible, and with the system's
+    /// region capture when it's hidden from capture altogether (Settings can do that).
     func applySharing() {
         let visible = Settings.shared.overlayInRecordings
         windows.forEach { $0.sharingType = visible ? .readOnly : .none }

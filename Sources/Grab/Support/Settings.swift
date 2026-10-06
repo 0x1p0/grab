@@ -120,6 +120,8 @@ final class Settings {
     /// Save history between launches, encrypted (off: memory only).
     var keepHistory: Bool { didSet { save("keepHistory", keepHistory) } }
     var keepHistoryDays: Int { didSet { save("keepHistoryDays", keepHistoryDays) } }
+    /// The border, HUD and mascot show up in screen sharing and recordings (Grab's own
+    /// captures leave them out either way).
     var overlayInRecordings: Bool { didSet { save("overlayInRecordings", overlayInRecordings) } }
     /// Bundle identifiers where holding ⌥ should be left alone.
     var excludedApps: [String] { didSet { save("excludedApps", excludedApps) } }
@@ -177,7 +179,7 @@ final class Settings {
             "historyLimit": 12,
             "keepHistory": false,
             "keepHistoryDays": 7,
-            "overlayInRecordings": false,
+            "overlayInRecordings": true,
             "excludedApps": [String](),
             "formatChoices": [String: String](),
             "searchEngine": "google",
